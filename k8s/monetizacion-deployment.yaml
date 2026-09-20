@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: servicio-monetizacion
+  namespace: aws-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: servicio-monetizacion
+  template:
+    metadata:
+      labels:
+        app: servicio-monetizacion
+    spec:
+      containers:
+      - name: monetizacion
+        image: jobbi/servicio-monetizacion:v1
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+        env:
+        - name: AWS_ENDPOINT_URL
+          value: "http://localstack.aws-local.svc.cluster.local:4566"
+        - name: QUEUE_URL
+          value: "http://localstack.aws-local.svc.cluster.local:4566/000000000000/monetizacion-events-queue"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: servicio-monetizacion
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  selector:
+    app: servicio-monetizacion
