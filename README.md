@@ -2,6 +2,8 @@
 
 Este repositorio contiene la arquitectura de emulación local para la integración asíncrona (*Transactional Outbox / Pub-Sub*) entre el microservicio de **Contrataciones** (productor) y **Monetización** (consumidor) utilizando **Kubernetes (Minikube)** y **LocalStack** (AWS SNS/SQS).
 
+Además incluye el **frontend** (`frontend/`), el prototipo navegable de JOBBI en **Next.js**, desplegable en el mismo clúster. Actualmente el frontend opera con datos simulados y **todavía no está conectado** al backend de Monetización.
+
 ---
 
 ## 📋 Prerequisitos
@@ -137,6 +139,52 @@ kubectl get pods -n aws-local -w
 
 ---
 
+### 6. Levantar el Frontend (Prototipo Navegable)
+
+El frontend vive en `frontend/` y está construido con **Next.js 16 + React 19** y **pnpm**.
+Por ahora es un prototipo navegable con datos simulados: **no consume aún la API de Monetización**.
+
+#### Opción A — Desarrollo local (la más rápida)
+
+```bash
+cd frontend
+corepack enable          # habilita pnpm (viene con Node 20+)
+pnpm install
+pnpm dev
+```
+
+Abre `http://localhost:3000`.
+
+#### Opción B — Desplegado en Minikube (igual que los demás servicios)
+
+1. Construye la imagen y cárgala en el registro interno de Minikube:
+
+   **macOS / Linux:**
+   ```bash
+   ./scripts/build-frontend-image.sh
+   ```
+
+   **Windows (PowerShell) o manual:**
+   ```powershell
+   docker build -t jobbi/frontend:v1 .\frontend
+   minikube image load jobbi/frontend:v1
+   ```
+
+2. Despliega el manifiesto:
+   ```bash
+   kubectl apply -f k8s/frontend-deployment.yaml
+   kubectl get pods -n aws-local
+   ```
+
+3. En una terminal adicional, abre el reenvío de puertos:
+   ```bash
+   kubectl port-forward svc/jobbi-frontend 3000:3000 -n aws-local
+   ```
+
+Para apagarlo: `kubectl delete -f k8s/frontend-deployment.yaml`.
+
+---
+
 ## 🧪 Verificación y Pruebas de Integración
 
 ### Prueba Manual Pub/Sub (SNS -> SQS -> Worker Python)
@@ -177,14 +225,29 @@ kubectl get pods -n aws-local -w
 .
 ├── k8s/
 │   ├── localstack-deployment.yaml    # Infraestructura emulada de AWS (LocalStack)
-│   └── monetizacion-deployment.yaml  # Deployment y Service para Monetización
+│   ├── monetizacion-deployment.yaml  # Deployment y Service para Monetización
+│   └── frontend-deployment.yaml      # Deployment y Service para el frontend (Next.js)
 ├── simulators/
 │   └── monetizacion/
 │       ├── app.py                    # Aplicación FastAPI + Worker SQS en segundo plano
 │       ├── Dockerfile                # Configuración del contenedor Python
 │       └── requirements.txt          # Dependencias (fastapi, boto3, uvicorn)
+├── frontend/                         # Prototipo navegable JOBBI (Next.js 16 + React 19)
+│   ├── app/                          # App Router (layout, page, estilos globales)
+│   ├── components/jobbi/             # Pantallas y datos mock del prototipo
+│   ├── Dockerfile                    # Imagen multi-etapa (output: standalone)
+│   └── package.json                  # Dependencias y scripts (pnpm)
+├── scripts/
+│   ├── init-aws-local.sh             # Aprovisionamiento SNS/SQS en LocalStack
+│   ├── build-frontend-image.sh       # Build + carga de la imagen del frontend en Minikube
+│   └── run-load-test.ps1             # Prueba de carga k6 (Windows)
+├── tests/k6/                         # Scripts de prueba de carga
 └── README.md                         # Instrucciones de ejecución
 ```
+
+> **Nota de integración:** el frontend y el backend de Monetización conviven en la misma
+> arquitectura pero **aún no están conectados entre sí**. El prototipo navegable funciona
+> con datos simulados (`components/jobbi/data.ts`) y no consume todavía la API `:8000`.
 
 Aquí tienes el bloque formateado en Markdown exclusivo para la sección de las pruebas de carga, listo para copiar y pegar directamente en tu archivo `README.md`:
 
@@ -253,6 +316,9 @@ Ve a las ventanas de terminal donde tienes ejecutando los comandos `kubectl port
 Para eliminar los Pods, Deployments y Servicios creados en el namespace `aws-local` sin apagar el clúster:
 
 ```powershell
+# Eliminar el frontend
+kubectl delete -f k8s/frontend-deployment.yaml
+
 # Eliminar el microservicio de Monetización
 kubectl delete -f k8s/monetizacion-deployment.yaml
 

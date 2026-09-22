@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobbi-frontend
+  namespace: aws-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jobbi-frontend
+  template:
+    metadata:
+      labels:
+        app: jobbi-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: jobbi/frontend:v1
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "production"
+        # Nota: el prototipo navegable aún no consume la API de Monetización.
+        # Cuando se integre, apuntar a:
+        # http://servicio-monetizacion.aws-local.svc.cluster.local:8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jobbi-frontend
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3000
+    targetPort: 3000
+    name: http
+  selector:
+    app: jobbi-frontend
