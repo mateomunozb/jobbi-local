@@ -16,3 +16,10 @@ __v0_jsx-dev-runtime.ts
 
 # Sistema operativo
 .DS_Store
+
+# Entorno virtual, logs y datos locales del backend
+.venv/
+.logs/
+.datos/
+__pycache__/
+*.pyc

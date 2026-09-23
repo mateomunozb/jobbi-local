@@ -22,9 +22,11 @@ spec:
         env:
         - name: NODE_ENV
           value: "production"
-        # Nota: el prototipo navegable aún no consume la API de Monetización.
-        # Cuando se integre, apuntar a:
-        # http://servicio-monetizacion.aws-local.svc.cluster.local:8000
+        # El navegador llama a /api/... en el mismo origen; el servidor de Next
+        # reenvía al gateway con esta URL (app/api/[...ruta]/route.ts la lee en
+        # cada petición, así que cambiarla no obliga a reconstruir la imagen).
+        - name: API_GATEWAY_URL
+          value: "http://api-gateway.aws-local.svc.cluster.local:8080"
         resources:
           requests:
             cpu: "100m"

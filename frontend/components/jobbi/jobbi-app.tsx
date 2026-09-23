@@ -1,60 +1,1253 @@
 "use client"
 
-import { useMemo, useState } from "react"
-import { ArrowLeft, ArrowRight, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, CircleAlert, Clock3, CreditCard, HelpCircle, Home, Loader2, LockKeyhole, MapPin, MessageCircle, MoreHorizontal, RefreshCw, Search, Send, ShieldCheck, Sparkles, Star, UserRound, WalletCards, X } from "lucide-react"
-import { categories, messages, navAdmin, navDemandante, navPrestador, navigationTree, notifications, providers, statuses, walletMovements, type Provider, type Role, type Screen } from "./data"
-
-type Props = { role: Role; setRole: (role: Role) => void; screen: Screen; setScreen: (screen: Screen) => void }
+import { useEffect, useMemo, useState } from "react"
+import { ArrowLeft, ArrowRight, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, CircleAlert, Clock3, CreditCard, Home, Loader2, LockKeyhole, LogOut, Mail, MapPin, MessageCircle, MoreHorizontal, RefreshCw, Search, Send, ShieldCheck, Sparkles, Star, UserRound, WalletCards } from "lucide-react"
+import { navAdmin, navDemandante, navPrestador, navigationTree, type Role, type Screen } from "./data"
+import { ApiError, CATEGORIAS_SUGERIDAS, MUNICIPIOS, api, iniciales, pesos, type Categoria, type Contratacion, type ConversacionEnBandeja, type Mensaje, type PerfilPrestador, type Resena, type Sesion } from "@/lib/api"
+import { SesionContext, guardarSesion, leerSesionGuardada, perfilIdDe, useSesion, type Seleccion } from "./session"
+import { useDatos, type EstadoCarga } from "./use-data"
 
 const iconFor = (label: string) => ({ Buscar: Search, Mensajes: MessageCircle, Contrataciones: BriefcaseBusiness, Notificaciones: Bell, Perfil: UserRound, Dashboard: Home, Métricas: Home, Alertas: Bell, Solicitudes: BriefcaseBusiness, Billetera: WalletCards }[label] || MoreHorizontal)
 
-function Button({ children, onClick, variant = "primary", disabled = false, className = "" }: { children: React.ReactNode; onClick?: () => void; variant?: "primary" | "secondary" | "ghost" | "danger"; disabled?: boolean; className?: string }) {
-  return <button disabled={disabled} onClick={onClick} className={`jobbi-button jobbi-${variant} ${className}`}>{children}</button>
+// Los colores de avatar rotan de forma estable a partir del id, para que la
+// misma persona conserve siempre el mismo color entre pantallas.
+const acentos = ["blue", "rose", "green", "purple"] as const
+const acentoDe = (id: string) => acentos[[...id].reduce((suma, c) => suma + c.charCodeAt(0), 0) % acentos.length]
+
+const fecha = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" }) : "—"
+const hora = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" }) : "—"
+// Los valores de las enumeraciones llegan en MAYÚSCULA_CON_GUIONES. La mayoría
+// se puede formatear mecánicamente; estos no, porque el guion es parte del
+// término tal como lo nombra el modelo de dominio.
+const ETIQUETAS: Record<string, string> = { CHECK_IN: "Check-in", CHECK_OUT: "Check-out" }
+const enTitulo = (valor: string) =>
+  ETIQUETAS[valor] ?? valor.charAt(0) + valor.slice(1).toLowerCase().replace(/_/g, " ")
+const tonoEstado = (estado: string) => estado === "COMPLETADA" ? "success" : estado === "EN_DISPUTA" || estado === "CANCELADA" ? "danger" : "warning"
+
+function Button({ children, onClick, variant = "primary", disabled = false, className = "", type = "button" }: { children: React.ReactNode; onClick?: () => void; variant?: "primary" | "secondary" | "ghost" | "danger"; disabled?: boolean; className?: string; type?: "button" | "submit" }) {
+  return <button type={type} disabled={disabled} onClick={onClick} className={`jobbi-button jobbi-${variant} ${className}`}>{children}</button>
 }
 function Badge({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "success" | "warning" | "danger" | "neutral" | "brand" }) { return <span className={`jobbi-badge badge-${tone}`}>{children}</span> }
 function Verified() { return <Badge tone="success"><ShieldCheck aria-hidden="true" /> Verificado</Badge> }
-function Rating({ value, count }: { value: number; count?: number }) { return <span className="rating"><Star aria-hidden="true" fill="currentColor" /> <strong>{value}</strong>{count !== undefined && <span>({count})</span>}</span> }
-function ProviderCard({ provider, onClick }: { provider: Provider; onClick: () => void }) { return <button className="provider-card" onClick={onClick}><div className={`avatar avatar-${provider.accent}`}>{provider.initials}</div><div className="provider-main"><div className="row-between"><div><h3>{provider.name}</h3><p>{provider.oficio}</p></div>{provider.verified && <Verified />}</div><div className="provider-meta"><Rating value={provider.rating} count={provider.reviews} /><span>{provider.rate}</span></div><span className="distance"><MapPin aria-hidden="true" /> Medellín · 1.2 km</span></div><ChevronRight aria-hidden="true" className="chevron" /></button> }
+function Rating({ value, count }: { value: number; count?: number }) { return <span className="rating"><Star aria-hidden="true" fill="currentColor" /> <strong>{value.toFixed(1)}</strong>{count !== undefined && <span>({count})</span>}</span> }
 function SkeletonCard() { return <div className="skeleton-card"><div className="skeleton avatar" /><div className="skeleton-lines"><span className="skeleton" /><span className="skeleton short" /><span className="skeleton" /></div></div> }
 function PageHeader({ title, subtitle, onBack, action, className = "" }: { title: string; subtitle?: string; onBack?: () => void; action?: React.ReactNode; className?: string }) { return <header className={`page-header ${className}`}>{onBack ? <button className="icon-button" aria-label="Volver" onClick={onBack}><ArrowLeft /></button> : <div className="brand-mark small">J</div>}<div className="header-title"><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>{action || <div className="header-spacer" />}</header> }
-function BottomNav({ role, screen, setScreen }: { role: Role; screen: Screen; setScreen: (s: Screen) => void }) { const items = role === "Demandante" ? navDemandante : role === "Admin" ? navAdmin : navPrestador; return <nav className="bottom-nav" aria-label="Navegación principal">{items.map(([key, label]) => { const Icon = iconFor(label); return <button key={key} className={screen === key ? "active" : ""} onClick={() => setScreen(key as Screen)}><Icon aria-hidden="true" /><span>{label}</span></button> })}</nav> }
-function AppShell({ children, role, setRole, screen, setScreen, showNav = true }: Props & { children: React.ReactNode; showNav?: boolean }) { return <div className="app-frame"><div className="role-switcher"><span>Vista de demo</span><button className={role === "Demandante" ? "selected" : ""} onClick={() => { setRole("Demandante"); setScreen("search") }}>Demandante</button><button className={role === "Prestador" ? "selected" : ""} onClick={() => { setRole("Prestador"); setScreen("dashboard") }}>Prestador</button><button className={role === "Admin" ? "selected" : ""} onClick={() => { setRole("Admin"); setScreen("admin") }}>Admin</button></div>{children}{showNav && <BottomNav role={role} screen={screen} setScreen={setScreen} />}</div> }
-
-function MapScreen({ setScreen }: { setScreen: (s: Screen) => void }) { return <div className="center-screen"><div className="brand-lockup"><div className="brand-mark">J</div><span>JOBBI</span></div><div className="eyebrow">MAPA DE NAVEGACIÓN</div><h1>Oficios confiables,<br /><em>cerca de ti.</em></h1><p className="lead">Conecta con personas verificadas para resolver lo que necesitas en Medellín y el Valle de Aburrá.</p><div className="map-list">{navigationTree.map((group, index) => <div className="map-group" key={group.title}><div className="map-index">0{index + 1}</div><div><strong>{group.title}</strong><p>{group.items.join("  ·  ")}</p></div></div>)}</div><Button onClick={() => setScreen("landing")}>Explorar JOBBI <ArrowRight data-icon="inline-end" /></Button></div> }
-function Landing({ setScreen }: { setScreen: (s: Screen) => void }) { return <div className="center-screen landing"><div className="brand-lockup"><div className="brand-mark">J</div><span>JOBBI</span></div><div className="landing-art"><Sparkles /><div>Tu próxima solución<br /><strong>empieza aquí.</strong></div><span className="art-dot one" /><span className="art-dot two" /></div><div><div className="eyebrow">EL MARKETPLACE DE OFICIOS</div><h1>Todo resuelto.<br /><em>Sin complicaciones.</em></h1><p className="lead">Encuentra, contrata y confía en profesionales verificados cerca de ti.</p></div><Button onClick={() => setScreen("role")}>Comenzar <ArrowRight data-icon="inline-end" /></Button><button className="text-button" onClick={() => setScreen("map")}>Ver mapa de navegación</button></div> }
-function RoleScreen({ setScreen, setRole }: { setScreen: (s: Screen) => void; setRole: (r: Role) => void }) { const [role, setLocal] = useState<Role>("Demandante"); return <div className="center-screen"><PageHeader title="¿Cómo usarás JOBBI?" subtitle="Puedes cambiarlo después" onBack={() => setScreen("landing")} /><div className="role-cards"><button className={role === "Demandante" ? "role-card active" : "role-card"} onClick={() => setLocal("Demandante")}><div className="role-icon"><Search /></div><strong>Soy Demandante</strong><p>Necesito contratar un oficio para mi hogar o negocio.</p><span>Buscar profesionales <ArrowRight /></span></button><button className={role === "Prestador" ? "role-card active" : "role-card"} onClick={() => setLocal("Prestador")}><div className="role-icon peach"><BriefcaseBusiness /></div><strong>Soy Prestador</strong><p>Ofrezco mis servicios y quiero encontrar clientes.</p><span>Ofrecer mis oficios <ArrowRight /></span></button></div><Button onClick={() => { setRole(role); setScreen("register") }}>Continuar <ArrowRight data-icon="inline-end" /></Button></div> }
-function Register({ setScreen }: { setScreen: (s: Screen) => void }) { return <div className="center-screen"><PageHeader title="Crea tu cuenta" subtitle="Solo tomará un momento" onBack={() => setScreen("role")} /><div className="form-stack"><label>Nombre completo<input placeholder="Ej. Laura Martínez" /></label><label>Correo electrónico<input type="email" placeholder="tu@correo.com" /></label><label>Número de teléfono<div className="phone-input"><span>+57</span><input placeholder="300 000 0000" /></div></label><div className="form-grid"><label>Tipo de documento<select defaultValue="CC"><option>CC</option><option>CE</option><option>PPT</option></select></label><label>Número de documento<input placeholder="1.000.000.000" /></label></div></div><p className="fine-print">Al continuar aceptas nuestros términos y condiciones y política de privacidad.</p><Button onClick={() => setScreen("otp")}>Crear cuenta <ArrowRight data-icon="inline-end" /></Button></div> }
-function Otp({ setScreen }: { setScreen: (s: Screen) => void }) { const [error, setError] = useState(false); const [loading, setLoading] = useState(false); const submit = () => { setLoading(true); setTimeout(() => { setLoading(false); setScreen("verification") }, 650) }; return <div className="center-screen"><PageHeader title="Verifica tu teléfono" subtitle="Enviamos un código a +57 300 000 0000" onBack={() => setScreen("register")} /><div className="otp-box"><div className="otp-icon"><LockKeyhole /></div><p>Ingresa el código de 6 dígitos</p><div className="otp-inputs">{[1,2,3,4,5,6].map(i => <input aria-label={`Dígito ${i}`} key={i} maxLength={1} onChange={() => setError(false)} />)}</div>{error && <div className="form-error"><CircleAlert /> El código no es correcto. Intenta de nuevo.</div>}<button className="text-button">¿No recibiste el código? Reenviar</button></div><Button onClick={submit} disabled={loading}>{loading ? <><Loader2 className="spin" /> Validando…</> : <>Verificar <Check data-icon="inline-end" /></>}</Button><button className="text-button" onClick={() => setError(true)}>Ver estado de error</button></div> }
-function Coverage({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) { return <div className="center-screen"><div className="status-illustration warning"><MapPin /></div><div className="eyebrow">COBERTURA ACTUAL</div><h1>Aún no llegamos<br /><em>a tu ciudad.</em></h1><p className="lead">Por ahora JOBBI está disponible en Medellín y el Valle de Aburrá. Te avisaremos cuando lleguemos a tu zona.</p><div className="coverage-card"><div><MapPin /><div><strong>Medellín y Valle de Aburrá</strong><span>Disponible ahora</span></div></div><Check /></div><Button onClick={() => setScreen(role === "Demandante" ? "search" : "dashboard")}>Entrar a JOBBI <ArrowRight data-icon="inline-end" /></Button><button className="text-button" onClick={() => setScreen("map")}>Volver al mapa</button></div> }
-
-function SearchScreen({ setScreen }: { setScreen: (s: Screen) => void }) { const [category, setCategory] = useState("Todos"); return <AppContent><PageHeader title="Hola, Laura" subtitle="¿Qué necesitas resolver hoy?" action={<button className="icon-button"><Bell /><span className="notification-dot" /></button>} /><div className="search-hero"><div className="eyebrow">ENCUENTRA LO QUE NECESITAS</div><h2>Un oficio de confianza,<br /><em>a un clic de distancia.</em></h2><button className="search-field" onClick={() => setScreen("results")}><Search /><span>¿Qué oficio buscas?</span><ArrowRight /></button></div><section><div className="section-heading"><h2>Categorías</h2><button className="text-button">Ver todas</button></div><div className="category-row">{categories.map((c, i) => <button key={c} className={category === c ? "category active" : "category"} onClick={() => setCategory(c)}><span className={`category-icon c${i}`} />{c}</button>)}</div></section><section><div className="section-heading"><h2>Prestadores cerca de ti</h2><button className="text-button" onClick={() => setScreen("results")}>Ver todos</button></div><div className="provider-list">{providers.slice(0,2).map(p => <ProviderCard key={p.id} provider={p} onClick={() => setScreen("provider")} />)}</div></section></AppContent> }
-function Results({ setScreen }: { setScreen: (s: Screen) => void }) { const [state, setState] = useState<"data" | "loading" | "empty" | "error">("data"); return <AppContent><PageHeader title="Resultados" subtitle="Medellín · 12 prestadores" onBack={() => setScreen("search")} action={<button className="icon-button"><MoreHorizontal /></button>} /><div className="filter-bar"><button className="filter active">Todos</button><button className="filter">Calificación <ChevronRight /></button><button className="filter">Tarifa <ChevronRight /></button></div><div className="state-switcher"><span>Estado de demo:</span>{["data","loading","empty","error"].map(s => <button key={s} onClick={() => setState(s as typeof state)}>{s}</button>)}</div>{state === "loading" ? <div className="provider-list"><SkeletonCard /><SkeletonCard /><SkeletonCard /></div> : state === "empty" ? <EmptyState title="No encontramos prestadores" text="Prueba ampliando el radio de búsqueda o cambia tus filtros." action="Ampliar radio" onClick={() => setState("data")} /> : state === "error" ? <EmptyState title="Algo salió mal" text="No pudimos cargar los resultados. Revisa tu conexión e intenta de nuevo." action="Reintentar" onClick={() => setState("data")} error /> : <div className="provider-list">{providers.map(p => <ProviderCard key={p.id} provider={p} onClick={() => setScreen("provider")} />)}</div>}</AppContent> }
-function EmptyState({ title, text, action, onClick, error = false }: { title: string; text: string; action: string; onClick: () => void; error?: boolean }) { return <div className="empty-state">{error ? <CircleAlert /> : <Search />}<h2>{title}</h2><p>{text}</p><Button variant="secondary" onClick={onClick}>{error && <RefreshCw data-icon="inline-start" />}{action}</Button></div> }
-function ProviderProfile({ setScreen }: { setScreen: (s: Screen) => void }) { const p = providers[0]; return <AppContent><PageHeader title="Perfil del prestador" onBack={() => setScreen("results")} action={<button className="icon-button"><MoreHorizontal /></button>} /><div className="profile-hero"><div className="avatar avatar-blue large">CR</div><h2>{p.name}</h2><p>{p.oficio}</p>{p.verified && <Verified />}<Rating value={p.rating} count={p.reviews} /><span className="distance"><MapPin /> Laureles, Medellín</span></div><div className="profile-stats"><div><strong>{p.experience} años</strong><span>Experiencia</span></div><div><strong>{p.reviews}</strong><span>Contrataciones</span></div><div><strong>{p.rate.split("/")[0]}</strong><span>Tarifa desde</span></div></div><section className="detail-section"><h2>Sobre Carlos</h2><p>Especialista en reparaciones de plomería residencial. Trabajo limpio, puntual y con garantía en cada servicio.</p></section><section className="detail-section"><div className="section-heading"><h2>Oficios ofrecidos</h2><Badge tone="brand">Respuesta rápida</Badge></div><div className="chips"><span>Plomería</span><span>Reparaciones</span><span>Instalaciones</span></div></section><div className="sticky-action"><Button onClick={() => setScreen("chat")}>Contactar a Carlos <MessageCircle data-icon="inline-end" /></Button></div></AppContent> }
-function Chat({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) { const [text, setText] = useState(""); const [sent, setSent] = useState(false); return <AppContent><PageHeader title={role === "Demandante" ? "Carlos Ramírez" : "Laura Martínez"} subtitle="Activo hace 5 min" onBack={() => setScreen(role === "Demandante" ? "provider" : "requests")} action={<button className="icon-button"><MoreHorizontal /></button>} /><div className="chat-identity"><div className="avatar avatar-blue">{role === "Demandante" ? "CR" : "LM"}</div><div><strong>{role === "Demandante" ? "Carlos Ramírez" : "Laura Martínez"}</strong><span><span className="online-dot" /> En línea</span></div></div><div className="chat-body"><div className="chat-date">HOY, 10 DE SEPTIEMBRE</div>{messages.concat(sent ? [{ from: "me", text, time: "10:39" }] : []).map((m, i) => <div key={i} className={`message ${m.from === "me" ? "mine" : "theirs"}`}><p>{m.text}</p><span>{m.time}</span></div>)}</div><div className="chat-compose"><input value={text} onChange={e => setText(e.target.value)} placeholder="Escribe un mensaje..." onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229 && text) { setSent(true); setText("") } }} /><Button onClick={() => { if (text) { setSent(true); setText("") } }}><Send /></Button></div>{sent && <div className="form-error subtle"><Check /> Mensaje enviado correctamente</div>}<div className="chat-cta"><Button onClick={() => setScreen(role === "Demandante" ? "request" : "checkin")}>{role === "Demandante" ? "Solicitar contratación" : "Ver contratación activa"} <ArrowRight data-icon="inline-end" /></Button></div></AppContent> }
-function Request({ setScreen }: { setScreen: (s: Screen) => void }) { return <AppContent><PageHeader title="Solicitar contratación" subtitle="Carlos Ramírez · Plomería" onBack={() => setScreen("chat")} /><div className="form-stack"><label>Oficio<select defaultValue="Plomería y reparaciones"><option>Plomería y reparaciones</option><option>Instalaciones</option></select></label><label>Fecha de ejecución<div className="input-icon"><CalendarDays /><input type="date" defaultValue="2026-09-18" /></div></label><label>Valor acordado<input defaultValue="85000" type="number" /></label><fieldset><legend>Medio de pago</legend><label className="radio-card"><input type="radio" name="payment" defaultChecked /> <span><strong>Efectivo</strong><small>Pagas directamente al finalizar</small></span><Check /></label><label className="radio-card"><input type="radio" name="payment" /> <span><strong>Plataforma</strong><small>Pago seguro dentro de JOBBI</small></span></label></fieldset><div className="summary-box"><span>Comisión de plataforma</span><strong>$0 para ti</strong><span>Total estimado</span><strong>$85.000 COP</strong></div></div><div className="request-action"><Button onClick={() => setScreen("tracking")}>Enviar solicitud <ArrowRight data-icon="inline-end" /></Button></div></AppContent> }
-function Tracking({ setScreen }: { setScreen: (s: Screen) => void }) { const [completed, setCompleted] = useState(false); return <AppContent><PageHeader title="Seguimiento" subtitle="Contratación #1042" onBack={() => setScreen("search")} action={<Badge tone={completed ? "success" : "warning"}>{completed ? "Completada" : "En curso"}</Badge>} /><div className="tracking-card"><div className="tracking-head"><div><span className="eyebrow">PLOMERÍA Y REPARACIONES</span><h2>Reparación de fuga</h2></div><span className="tracking-price">$85.000</span></div><div className="timeline">{statuses.map((status, i) => { const active = completed ? true : i <= 3; return <div className={`timeline-item ${active ? "done" : ""}`} key={status}><div className="timeline-dot">{active ? <Check /> : <span>{i + 1}</span>}</div><div><strong>{status}</strong><span>{active ? i === 3 && !completed ? "Hoy · 2:15 p. m." : "Completado" : "Pendiente"}</span></div></div> })}</div></div><div className="provider-mini"><div className="avatar avatar-blue">CR</div><div><strong>Carlos Ramírez</strong><span><ShieldCheck /> Prestador verificado</span></div><button className="icon-button" onClick={() => setScreen("chat")}><MessageCircle /></button></div><Button onClick={() => completed ? setScreen("rating") : setCompleted(true)}>{completed ? "Calificar servicio" : "Simular check-out"} <ArrowRight data-icon="inline-end" /></Button><Button variant="danger" onClick={() => setScreen("incident")}>Reportar incidente</Button></AppContent> }
-function RatingScreen({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) { const [rating, setRating] = useState(0); const isPrestador = role === "Prestador"; return <AppContent><PageHeader title="Califica tu experiencia" subtitle="Contratación #1042 completada" onBack={() => setScreen(isPrestador ? "checkin" : "tracking")} /><div className="rating-card"><div className={`avatar ${isPrestador ? "avatar-purple" : "avatar-blue"} large`}>{isPrestador ? "LM" : "CR"}</div><h2>{isPrestador ? "¿Cómo fue trabajar con Laura?" : "¿Cómo fue tu servicio?"}</h2><p>{isPrestador ? "Califica a la persona que contrató tus servicios para ayudar a la comunidad." : "Tu opinión ayuda a otras personas a contratar con confianza."}</p><div className="stars-input">{[1,2,3,4,5].map(i => <button key={i} aria-label={`${i} estrellas`} onClick={() => setRating(i)}><Star fill={i <= rating ? "currentColor" : "none"} /></button>)}</div><textarea placeholder="Cuéntanos más sobre tu experiencia (opcional)" /></div><Button disabled={!rating} onClick={() => setScreen(isPrestador ? "dashboard" : "search")}>Publicar reseña <Check data-icon="inline-end" /></Button></AppContent> }
-function Incident({ setScreen }: { setScreen: (s: Screen) => void }) { return <AppContent><PageHeader title="Reportar incidente" subtitle="Contratación #1042" onBack={() => setScreen("tracking")} /><div className="alert-box"><CircleAlert /><p><strong>Tu seguridad es prioridad.</strong><br />Nuestro equipo revisará el caso y te contactará.</p></div><div className="form-stack"><label>Tipo de incidente<select><option>Incumplimiento del servicio</option><option>Problema de pago</option><option>Comportamiento inapropiado</option></select></label><label>Descripción<textarea placeholder="Cuéntanos qué sucedió..." /></label><label>Evidencia <div className="upload-box"><span>Adjunta fotos o documentos</span><Button variant="secondary">Seleccionar archivo</Button></div></label></div><Button variant="danger" onClick={() => setScreen("tracking")}>Enviar reporte <ArrowRight data-icon="inline-end" /></Button></AppContent> }
-function Notifications({ setScreen }: { setScreen: (s: Screen) => void }) { const [state, setState] = useState("data"); return <AppContent><PageHeader title="Notificaciones" subtitle="Mantente al día" onBack={() => setScreen("search")} action={<button className="text-button" onClick={() => setState("empty")}>Marcar leídas</button>} />{state === "empty" ? <EmptyState title="No tienes notificaciones nuevas" text="Te avisaremos cuando haya novedades sobre tus contrataciones." action="Volver a buscar" onClick={() => setScreen("search")} /> : <div className="notification-list">{notifications.map((n, i) => <div className="notification-item" key={i}><div className={`notification-icon ${n.type}`}><Bell /></div><div><strong>{n.title}</strong><p>{n.body}</p><span>{n.time}</span></div><ChevronRight /></div>)}</div>}</AppContent> }
-function Profile({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) { return <AppContent><PageHeader title="Mi perfil" subtitle="Gestiona tu información" onBack={() => setScreen(role === "Demandante" ? "search" : "dashboard")} /><div className="profile-summary"><div className="avatar avatar-purple large">LM</div><div><h2>Laura Martínez</h2><p>laura.martinez@email.com</p><Badge tone="success"><Check /> Cuenta verificada</Badge></div><button className="icon-button"><MoreHorizontal /></button></div><div className="settings-list"><button onClick={() => setScreen("location")}><MapPin /><span><strong>Ubicación principal</strong><small>Laureles, Medellín</small></span><ChevronRight /></button><button onClick={() => setScreen("personal")}><UserRound /><span><strong>Datos personales</strong><small>Edita tu información de contacto</small></span><ChevronRight /></button><button onClick={() => setScreen("help")}><HelpCircle /><span><strong>Centro de ayuda</strong><small>Resolvemos tus preguntas</small></span><ChevronRight /></button></div><FaqDropdown role="Demandante" /></AppContent> }
-function FaqDropdown({ role }: { role: Role }) { const questions = role === "Demandante" ? [["¿Cómo contrato un prestador?", "Busca un oficio, revisa el perfil y envía una solicitud con la fecha y el valor acordado."], ["¿Cómo funciona el pago?", "Puedes pagar directamente al finalizar o usar el pago seguro dentro de JOBBI."], ["¿Qué pasa si necesito ayuda?", "Nuestro equipo puede orientarte desde el Centro de ayuda y acompañarte durante la contratación."]] : [["¿Cómo recibo solicitudes?", "Completa tu perfil, publica tus oficios y mantente disponible para recibir nuevas oportunidades."], ["¿Cuánto cobra JOBBI?", "El plan Free aplica una comisión del 18% sobre cada contratación completada."], ["¿Cómo retiro mis ingresos?", "Tus ingresos se liquidan cada viernes y puedes retirarlos desde tu billetera."]] ; return <section className="faq-section"><div className="section-heading"><h2>Preguntas frecuentes</h2><HelpCircle /></div><div className="faq-list">{questions.map(([question, answer]) => <details key={question}><summary>{question}<ChevronRight /></summary><p>{answer}</p></details>)}</div></section> }
-
-function ProfileDetail({ kind, role, setScreen }: { kind: "location" | "personal" | "help"; role: Role; setScreen: (s: Screen) => void }) { const isPrestador = role === "Prestador"; const [saved, setSaved] = useState(false); const [name, setName] = useState(isPrestador ? "Carlos Ramírez" : "Laura Martínez"); const [email, setEmail] = useState(isPrestador ? "carlos.ramirez@email.com" : "laura.martinez@email.com"); const [phone, setPhone] = useState("+57 300 000 0000"); const [bio, setBio] = useState("Especialista en reparaciones de plomería residencial. Trabajo limpio, puntual y con garantía en cada servicio."); if (kind === "personal") return <AppContent><PageHeader title="Datos personales" subtitle="Edita la información que verán tus clientes" onBack={() => setScreen("profile")} /><div className="editable-profile"><div className="profile-edit-avatar"><div className="avatar avatar-blue large">CR</div><button className="text-button">Cambiar foto</button></div><div className="form-stack"><label>Nombre completo<input value={name} onChange={event => setName(event.target.value)} /></label><label>Correo electrónico<input type="email" value={email} onChange={event => setEmail(event.target.value)} /></label><label>Número de teléfono<input value={phone} onChange={event => setPhone(event.target.value)} /></label>{isPrestador && <><label>Oficio principal<input defaultValue="Plomería y reparaciones" /></label><label>Sobre ti y tus servicios<textarea value={bio} onChange={event => setBio(event.target.value)} /></label></>}</div><Button onClick={() => setSaved(true)}>{saved ? <><Check data-icon="inline-start" /> Cambios guardados</> : <>Guardar cambios <Check data-icon="inline-end" /></>}</Button>{saved && <p className="form-success"><Check /> Tu información se actualizó correctamente.</p>}</div></AppContent>; const content = { location: { title: "Ubicación principal", subtitle: "Define dónde necesitas servicios", icon: MapPin, heading: "Laureles, Medellín", text: "Usaremos esta ubicación para mostrarte prestadores disponibles cerca de ti.", action: "Editar ubicación" }, help: { title: "Centro de ayuda", subtitle: "Estamos aquí para ayudarte", icon: HelpCircle, heading: "¿En qué podemos ayudarte?", text: "Consulta respuestas sobre contrataciones, pagos y seguridad en JOBBI.", action: "Ver preguntas frecuentes" } }[kind]; const Icon = content.icon; return <AppContent><PageHeader title={content.title} subtitle={content.subtitle} onBack={() => setScreen("profile")} /><div className="detail-card"><div className="detail-icon"><Icon /></div><h2>{content.heading}</h2><p>{content.text}</p><Button variant="secondary">{content.action} <ChevronRight data-icon="inline-end" /></Button></div></AppContent> }
+function EmptyState({ title, text, action, onClick, error = false }: { title: string; text: string; action?: string; onClick?: () => void; error?: boolean }) { return <div className="empty-state">{error ? <CircleAlert /> : <Search />}<h2>{title}</h2><p>{text}</p>{action && onClick && <Button variant="secondary" onClick={onClick}>{error && <RefreshCw data-icon="inline-start" />}{action}</Button>}</div> }
 function AppContent({ children }: { children: React.ReactNode }) { return <main className="app-content">{children}</main> }
 
-function Dashboard({ setScreen }: { setScreen: (s: Screen) => void }) { return <AppContent><PageHeader title="Buenos días, Carlos" subtitle="Martes, 15 de septiembre" action={<button className="icon-button"><Bell /><span className="notification-dot" /></button>} /><div className="dashboard-hero"><div><span className="eyebrow">ESTADO DE TU CUENTA</span><h2>Estás listo para trabajar</h2><p><span className="online-dot" /> Disponible para nuevas solicitudes</p></div><Verified /></div><div className="metric-grid"><div><span>Contrataciones activas</span><strong>2</strong><small>+1 esta semana</small></div><div><span>Calificación promedio</span><strong>4.9 <Star fill="currentColor" /></strong><small>42 reseñas</small></div></div><section><div className="section-heading"><h2>Próxima contratación</h2><button className="text-button" onClick={() => setScreen("checkin")}>Ver detalle</button></div><div className="job-card"><div className="row-between"><div><span className="eyebrow">HOY · 2:00 P. M.</span><h3>Reparación de fuga</h3></div><Badge tone="warning">En curso</Badge></div><p><UserRound /> Laura Martínez · <MapPin /> Laureles</p><Button onClick={() => setScreen("checkin")}>Gestionar contratación <ArrowRight data-icon="inline-end" /></Button></div></section><section><div className="section-heading"><h2>Resumen de billetera</h2><button className="text-button" onClick={() => setScreen("wallet")}>Ver billetera</button></div><div className="wallet-mini"><WalletCards /><div><span>Saldo pendiente</span><strong>$42.500 COP</strong></div><ChevronRight /></div></section></AppContent> }
-function Requests({ setScreen }: { setScreen: (s: Screen) => void }) { const [accepted, setAccepted] = useState(false); const [state, setState] = useState("data"); return <AppContent><PageHeader title="Solicitudes" subtitle="Oportunidades para ti" onBack={() => setScreen("dashboard")} action={<Badge tone="brand">2 nuevas</Badge>} /><div className="state-switcher"><span>Estado:</span>{["data","loading","empty","error"].map(s => <button key={s} onClick={() => setState(s)}>{s}</button>)}</div>{state === "loading" ? <><SkeletonCard /><SkeletonCard /></> : state === "empty" ? <EmptyState title="Aún no tienes solicitudes" text="Cuando alguien necesite tus oficios, aparecerán aquí." action="Ver mi perfil" onClick={() => setScreen("profile")} /> : state === "error" ? <EmptyState title="No pudimos cargar tus solicitudes" text="Intenta de nuevo en unos segundos." action="Reintentar" onClick={() => setState("data")} error /> : <div className="request-list"><div className="request-card"><div className="row-between"><div className="avatar avatar-purple">LM</div><Badge tone="warning">Nueva</Badge></div><h2>Reparación de fuga</h2><p><UserRound /> Laura Martínez</p><p><CalendarDays /> Viernes, 18 de septiembre · 2:00 p. m.</p><p><MapPin /> Laureles, Medellín</p><div className="request-price"><span>Valor acordado</span><strong>$85.000 COP</strong></div>{accepted ? <div className="accepted"><Check /> Solicitud aceptada <Button variant="secondary" onClick={() => setScreen("chat")}>Abrir chat</Button></div> : <div className="button-row"><Button variant="secondary" onClick={() => setAccepted(true)}>Rechazar</Button><Button onClick={() => setAccepted(true)}>Aceptar solicitud</Button></div>}</div></div>}</AppContent> }
-function Checkin({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) { const [checked, setChecked] = useState(false); const isPrestador = role === "Prestador"; return <AppContent><PageHeader title="Contratación activa" subtitle="#1042 · Reparación de fuga" onBack={() => setScreen("dashboard")} /><div className="job-detail"><div className="job-detail-top"><div className="avatar avatar-purple">LM</div><div><h2>Laura Martínez</h2><p><MapPin /> Laureles, Medellín</p></div><Badge tone="warning">En curso</Badge></div><div className="time-block"><CalendarDays /><div><span>Hoy, 18 de septiembre</span><strong>2:00 p. m. – 4:00 p. m.</strong></div></div><div className="checkin-status"><div className={checked ? "check-step done" : "check-step current"}><div>{checked ? <Check /> : "1"}</div><span>Check-in</span></div><div className="check-line" /><div className={!checked ? "check-step" : "check-step current"}><div>{!checked ? "2" : <Clock3 />}</div><span>Check-out</span></div></div></div><div className="alert-box info"><Clock3 /><p><strong>Recuerda registrar tu llegada</strong><br />El check-in protege a ambas partes y activa el seguimiento.</p></div><Button onClick={() => checked ? setScreen(isPrestador ? "rating" : "dashboard") : setChecked(true)}>{checked ? "Registrar check-out" : "Registrar check-in"} <Check data-icon="inline-end" /></Button><Button variant="secondary" onClick={() => setScreen("chat")}>Contactar a Laura <MessageCircle data-icon="inline-end" /></Button></AppContent> }
-function Verification({ setScreen }: { setScreen: (s: Screen) => void }) { const [status, setStatus] = useState("Inicio"); const isBlocked = status === "Bloqueada"; const isTruora = status === "Truora"; return <AppContent><PageHeader title="Verificación de identidad" subtitle="Tu confianza es nuestra prioridad" onBack={() => setScreen("profile")} /><div className="state-switcher"><span>Estado de demo:</span>{["Inicio","Truora","Aprobada","Rechazada","Bloqueada"].map(s => <button key={s} onClick={() => setStatus(s)}>{s}</button>)}</div>{isBlocked ? <div className="verification-panel blocked"><div className="verification-icon"><LockKeyhole /></div><Badge tone="warning">Verificación pendiente</Badge><h2>Tu cuenta está temporalmente bloqueada</h2><p>Para proteger a toda la comunidad, primero debes verificar tu identidad. Hasta entonces no podrás solicitar servicios ni publicar los tuyos.</p><Button onClick={() => setStatus("Inicio")}>Verificar mi identidad <ArrowRight data-icon="inline-end" /></Button></div> : isTruora ? <div className="truora-mock"><div className="truora-logo"><ShieldCheck /><strong>truora</strong></div><span className="eyebrow">VERIFICACIÓN SEGURA</span><h2>Confirma que eres tú</h2><p>Esta es una pantalla ficticia de Truora para el demo. Aquí completarías la validación de tu documento y una prueba de vida.</p><div className="truora-steps"><span><Check /> Documento de identidad</span><span><Check /> Prueba de vida</span><span><Clock3 /> Resultado inmediato</span></div><Button onClick={() => setStatus("Aprobada")}>Completar verificación <Check data-icon="inline-end" /></Button></div> : <><div className="verification-panel pending"><div className="verification-icon"><ShieldCheck /></div><Badge tone="brand">Proceso guiado</Badge><h2>Verifica tu identidad con Truora</h2><p>Truora es un servicio externo especializado en verificación de identidad. JOBBI lo usa para validar tus documentos de forma segura y proteger a toda la comunidad.</p><div className="verification-benefits"><span><ShieldCheck /> Tus datos se procesan de forma segura</span><span><Check /> El proceso toma solo unos minutos</span><span><LockKeyhole /> JOBBI no guarda fotos de tus documentos</span></div><Button onClick={() => setStatus("Truora")}>Ver cómo verificar con Truora <ArrowRight data-icon="inline-end" /></Button></div><div className="verification-block-note"><LockKeyhole /><p><strong>¿Aún no verificas tu identidad?</strong> No podrás solicitar servicios ni publicar oficios hasta completar el proceso.</p><button className="text-button" onClick={() => setStatus("Bloqueada")}>Ver pantalla de bloqueo</button></div></>}{status === "Aprobada" && <div className="verified-callout"><Verified /><p>La insignia aparece porque tu <strong>EstadoVerificacion</strong> es Aprobada (RN-01).</p><Button onClick={() => setScreen("dashboard")}>Ir al inicio <ArrowRight data-icon="inline-end" /></Button></div>}{status === "Rechazada" && <div className="verification-panel rejected"><div className="verification-icon"><X /></div><Badge tone="danger">Rechazada</Badge><h2>Necesitamos una corrección</h2><p>La foto del documento no es legible. Sube una nueva para continuar.</p><Button onClick={() => setStatus("Inicio")}>Reintentar verificación</Button></div>}</AppContent> }
-function Plans({ setScreen }: { setScreen: (s: Screen) => void }) { const [pro, setPro] = useState(false); return <AppContent><PageHeader title="Planes para Prestadores" subtitle="Crece con JOBBI" onBack={() => setScreen("dashboard")} /><div className="plans-intro"><Sparkles /><h2>Gana más en cada contratación</h2><p>Elige el plan que mejor se adapta a tu negocio.</p></div><div className="plan-grid"><div className={`plan-card ${!pro ? "current" : ""}`}><div className="row-between"><h3>Free</h3>{!pro && <Badge>Actual</Badge>}</div><strong>18% <small>comisión</small></strong><ul><li><Check /> Perfil público</li><li><Check /> Recibe solicitudes</li><li><Check /> Reseñas verificadas</li></ul></div><div className={`plan-card pro ${pro ? "current" : ""}`}><div className="row-between"><h3>Pro</h3>{pro && <Badge tone="success">Actual</Badge>}</div><strong>12% <small>comisión</small></strong><span className="monthly">$39.900 COP / mes</span><ul><li><Check /> Todo lo de Free</li><li><Check /> Mayor visibilidad</li><li><Check /> Soporte prioritario</li></ul></div></div><Button onClick={() => setPro(true)} disabled={pro}>{pro ? "Plan Pro activo" : "Cambiar a Plan Pro"} <ArrowRight data-icon="inline-end" /></Button><p className="fine-print center">Puedes cancelar cuando quieras. El cambio se aplica de inmediato.</p></AppContent> }
-function Wallet({ setScreen }: { setScreen: (s: Screen) => void }) { const [blocked, setBlocked] = useState(false); return <AppContent><PageHeader title="Billetera" subtitle="Gestiona tus ingresos" onBack={() => setScreen("dashboard")} action={<button className="icon-button"><MoreHorizontal /></button>} /><div className={`wallet-balance ${blocked ? "blocked" : ""}`}><span>Saldo pendiente</span><strong>$42.500 <small>COP</small></strong><p>{blocked ? <><LockKeyhole /> Billetera bloqueada por saldo superior al umbral</> : <><Clock3 /> Se liquida cada viernes</>}</p></div><div className="button-row"><Button variant="secondary" onClick={() => setBlocked(!blocked)}>{blocked ? "Simular desbloqueo" : "Simular bloqueo RN-04"}</Button><Button disabled={blocked} onClick={() => setScreen("withdraw")}>Retirar saldo <ArrowRight data-icon="inline-end" /></Button></div><section><div className="section-heading"><h2>Movimientos</h2><button className="text-button">Ver todo</button></div><div className="movement-list">{walletMovements.map(m => <div className="movement" key={m.label}><div className="movement-icon"><WalletCards /></div><div><strong>{m.label}</strong><span>{m.date}</span></div><b className={m.amount.startsWith("+") ? "positive" : ""}>{m.amount}</b></div>)}</div></section></AppContent> }
-function Withdraw({ setScreen }: { setScreen: (s: Screen) => void }) { const [amount, setAmount] = useState(42500); const [submitted, setSubmitted] = useState(false); const fee = 2500; const total = Math.max(amount - fee, 0); return <AppContent><PageHeader className="withdraw-header" title="Retirar saldo" subtitle="Transfiere tus ingresos" onBack={() => setScreen("wallet")} />{submitted ? <div className="success-state"><Check /><h2>Solicitud enviada</h2><p>Tu retiro de ${total.toLocaleString("es-CO")} COP llegará a tu cuenta terminada en 4821 en 1 a 2 días hábiles.</p><Button onClick={() => setScreen("wallet")}>Volver a billetera <ArrowRight data-icon="inline-end" /></Button></div> : <><div className="withdraw-balance"><span>Saldo disponible</span><strong>$42.500 <small>COP</small></strong><p><ShieldCheck /> Retiro protegido por JOBBI</p></div><div className="form-stack"><label>Monto a retirar<div className="input-icon"><span>$</span><input type="number" min="2500" max="42500" value={amount} onChange={(event) => setAmount(Math.min(42500, Math.max(0, Number(event.target.value))))} /></div><small className="field-hint">Disponible: $42.500 COP</small></label><label>Cuenta destino<select defaultValue="bank"><option value="bank">Cuenta Bancolombia ···· 4821</option><option value="nequi">Nequi ···· 9012</option></select></label></div><div className="withdraw-summary"><div><span>Monto solicitado</span><strong>${amount.toLocaleString("es-CO")} COP</strong></div><div><span>Comisión de retiro</span><strong>-${fee.toLocaleString("es-CO")} COP</strong></div><div className="total"><span>Recibirás</span><strong>${total.toLocaleString("es-CO")} COP</strong></div></div><Button onClick={() => setSubmitted(true)} disabled={amount < fee}>Confirmar retiro <ArrowRight data-icon="inline-end" /></Button><p className="fine-print center">Los retiros se procesan en días hábiles. Puedes cancelar la solicitud mientras esté pendiente.</p></>}</AppContent> }
+/**
+ * Resuelve los tres estados de una consulta al backend con la misma apariencia
+ * en toda la app: esqueletos mientras carga, un estado de error con reintento,
+ * y los datos cuando llegan.
+ */
+function Consulta<T>({ estado, children, filas = 2 }: { estado: EstadoCarga<T>; children: (datos: T) => React.ReactNode; filas?: number }) {
+  if (estado.cargando) return <div className="provider-list">{Array.from({ length: filas }, (_, i) => <SkeletonCard key={i} />)}</div>
+  if (estado.error) return <EmptyState title="No pudimos cargar la información" text={estado.error} action="Reintentar" onClick={estado.recargar} error />
+  if (!estado.datos) return null
+  return <>{children(estado.datos)}</>
+}
 
-function AdminDashboard({ setScreen }: { setScreen: (s: Screen) => void }) { const [period, setPeriod] = useState("Últimos 30 días"); const [metric, setMetric] = useState<"Ingresos" | "Usuarios">("Ingresos"); const bars = metric === "Ingresos" ? [42, 58, 49, 71, 64, 82, 76] : [38, 52, 47, 68, 61, 79, 88]; const labels = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]; return <AppContent><PageHeader title="Panel de administración" subtitle="Visión general del negocio" action={<Badge tone="success">En vivo</Badge>} /><div className="admin-toolbar"><div><span className="eyebrow">PERIODO</span><select value={period} onChange={event => setPeriod(event.target.value)}><option>Últimos 30 días</option><option>Esta semana</option><option>Este año</option></select></div><button className="icon-button" aria-label="Actualizar métricas"><RefreshCw /></button></div><div className="admin-metric-grid"><div className="admin-metric"><span>Ingresos procesados</span><strong>$18,4M</strong><small className="positive">+12,8% vs. periodo anterior</small><div className="metric-spark"><i style={{height:"35%"}} /><i style={{height:"48%"}} /><i style={{height:"42%"}} /><i style={{height:"70%"}} /><i style={{height:"58%"}} /><i style={{height:"82%"}} /></div></div><div className="admin-metric"><span>Contrataciones</span><strong>1.284</strong><small className="positive">+8,4% esta semana</small><div className="metric-spark peach"><i style={{height:"52%"}} /><i style={{height:"38%"}} /><i style={{height:"66%"}} /><i style={{height:"58%"}} /><i style={{height:"78%"}} /><i style={{height:"88%"}} /></div></div><div className="admin-metric"><span>Usuarios activos</span><strong>3.892</strong><small className="positive">+18,2% mensual</small></div><div className="admin-metric"><span>Verificación aprobada</span><strong>94,6%</strong><small>2.108 identidades revisadas</small></div></div><section className="admin-chart-card"><div className="section-heading"><div><span className="eyebrow">TENDENCIA</span><h2>Actividad de la plataforma</h2></div><div className="chart-toggle"><button className={metric === "Ingresos" ? "active" : ""} onClick={() => setMetric("Ingresos")}>Ingresos</button><button className={metric === "Usuarios" ? "active" : ""} onClick={() => setMetric("Usuarios")}>Usuarios</button></div></div><div className="chart-value"><strong>{metric === "Ingresos" ? "$18,4M" : "3.892"}</strong><span>+12,8%</span></div><div className="bar-chart" aria-label={`Gráfico de ${metric.toLowerCase()} por día`}>{bars.map((height, index) => <div className="bar-column" key={labels[index]}><div className="bar-track"><i style={{height: `${height}%`}} /></div><span>{labels[index]}</span></div>)}</div></section><div className="admin-columns"><section className="admin-list-card"><div className="section-heading"><h2>Oficios más solicitados</h2><button className="text-button">Ver todos</button></div>{[["Plomería", "284", "82%"], ["Limpieza", "231", "68%"], ["Manicure", "198", "56%"], ["Jardinería", "143", "42%"]].map(([name, count, width], index) => <div className="ranking-row" key={name}><span className="rank">0{index + 1}</span><div><strong>{name}</strong><div className="rank-bar"><i style={{width}} /></div></div><b>{count}</b></div>)}</section><section className="admin-list-card"><div className="section-heading"><h2>Estado operativo</h2></div><div className="status-row"><span className="status-dot success" /> <span>Servicios completados</span><strong>86%</strong></div><div className="status-row"><span className="status-dot warning" /> <span>Solicitudes pendientes</span><strong>9%</strong></div><div className="status-row"><span className="status-dot danger" /> <span>Incidentes abiertos</span><strong>5%</strong></div><Button variant="secondary" onClick={() => setScreen("notifications")}>Revisar alertas <ArrowRight data-icon="inline-end" /></Button></section></div></AppContent> }
+function Avatar({ nombre, id, large = false }: { nombre: string; id: string; large?: boolean }) {
+  return <div className={`avatar avatar-${acentoDe(id)} ${large ? "large" : ""}`}>{iniciales(nombre) || "?"}</div>
+}
 
-function Reviews({ setScreen }: { setScreen: (s: Screen) => void }) { const [empty, setEmpty] = useState(false); return <AppContent><PageHeader title="Reseñas recibidas" subtitle="Tu reputación en JOBBI" onBack={() => setScreen("dashboard")} action={<button className="text-button" onClick={() => setEmpty(!empty)}>Ver vacío</button>} />{empty ? <EmptyState title="Aún no tienes reseñas" text="Completa tu primera contratación para empezar a construir tu reputación." action="Ver solicitudes" onClick={() => setScreen("requests")} /> : <><div className="review-summary"><strong>4.9</strong><div><Rating value={4.9} /><span>42 reseñas verificadas</span></div></div><div className="review-list">{["Excelente servicio, muy puntual y profesional.","Carlos encontró la solución rápidamente. Muy recomendado.","Trabajo limpio y trato amable."].map((text, i) => <div className="review" key={text}><div className="row-between"><div className="avatar avatar-purple">{["LM","AM","JP"][i]}</div><Rating value={5} /></div><p>{text}</p><span>Hace {i + 1} semanas · Contratación completada</span></div>)}</div></>}</AppContent> }
+type TarjetaPrestador = PerfilPrestador & { ofertas?: { oficioId: string; nombre: string; tarifaReferencial: number }[] }
 
-export default function JobbiApp() { const [role, setRole] = useState<Role>("Demandante"); const [screen, setScreen] = useState<Screen>("map"); const common = { role, setRole, screen, setScreen }; const content = useMemo(() => { if (screen === "map") return <MapScreen setScreen={setScreen} />; if (screen === "landing") return <Landing setScreen={setScreen} />; if (screen === "role") return <RoleScreen setScreen={setScreen} setRole={setRole} />; if (screen === "register") return <Register setScreen={setScreen} />; if (screen === "otp") return <Otp setScreen={setScreen} />; if (screen === "coverage") return <Coverage role={role} setScreen={setScreen} />; if (screen === "search") return <SearchScreen setScreen={setScreen} />; if (screen === "results") return <Results setScreen={setScreen} />; if (screen === "provider") return <ProviderProfile setScreen={setScreen} />; if (screen === "chat") return <Chat role={role} setScreen={setScreen} />; if (screen === "request") return <Request setScreen={setScreen} />; if (screen === "tracking") return <Tracking setScreen={setScreen} />; if (screen === "payment") return <Payment setScreen={setScreen} />; if (screen === "rating") return <RatingScreen role={role} setScreen={setScreen} />; if (screen === "incident") return <Incident setScreen={setScreen} />; if (screen === "notifications") return <Notifications setScreen={setScreen} />; if (screen === "profile") return role === "Prestador" ? <PrestadorProfile setScreen={setScreen} /> : <Profile role={role} setScreen={setScreen} />; if (screen === "location" || screen === "personal" || screen === "help") return <ProfileDetail kind={screen} role={role} setScreen={setScreen} />; if (screen === "dashboard") return <Dashboard setScreen={setScreen} />; if (screen === "admin") return <AdminDashboard setScreen={setScreen} />; if (screen === "requests") return <Requests setScreen={setScreen} />; if (screen === "checkin") return <Checkin role={role} setScreen={setScreen} />; if (screen === "verification") return <Verification setScreen={setScreen} />; if (screen === "plans") return <Plans setScreen={setScreen} />; if (screen === "wallet") return <Wallet setScreen={setScreen} />; if (screen === "withdraw") return <Withdraw setScreen={setScreen} />; return <Reviews setScreen={setScreen} /> }, [screen, role]); if (["map","landing","role","register","otp","coverage"].includes(screen)) return <div className="jobbi-app onboarding">{content}</div>; return <AppShell {...common}>{content}</AppShell> }
-function Payment({ setScreen }: { setScreen: (s: Screen) => void }) { const [status, setStatus] = useState("idle"); return <AppContent><PageHeader title="Pago seguro" subtitle="Contratación #1042" onBack={() => setScreen("request")} /><div className="payment-card"><CreditCard /><span>Valor a pagar</span><strong>$85.000 <small>COP</small></strong><p>Tu pago se libera cuando confirmes el servicio.</p></div>{status === "success" ? <div className="success-state"><Check /><h2>Pago confirmado</h2><p>Tu contratación está protegida por JOBBI.</p></div> : status === "error" ? <div className="alert-box"><CircleAlert /><p><strong>No pudimos procesar el pago.</strong><br />Revisa los datos de tu tarjeta e intenta de nuevo.</p></div> : <><div className="form-stack"><label>Número de tarjeta<input placeholder="0000 0000 0000 0000" /></label><div className="form-grid"><label>Vencimiento<input placeholder="MM / AA" /></label><label>CVV<input placeholder="000" /></label></div></div><Button onClick={() => { setStatus("loading"); setTimeout(() => setStatus("success"), 700) }} disabled={status === "loading"}>{status === "loading" ? <><Loader2 className="spin" /> Procesando…</> : <>Pagar $85.000 <LockKeyhole data-icon="inline-end" /></>}</Button><button className="text-button" onClick={() => setStatus("error")}>Ver estado de error</button></>}</AppContent> }
-function PrestadorProfile({ setScreen }: { setScreen: (s: Screen) => void }) { return <AppContent><PageHeader title="Mi perfil de Prestador" subtitle="Así te ven tus clientes" onBack={() => setScreen("dashboard")} action={<button className="text-button" onClick={() => setScreen("personal")}>Editar</button>} /><div className="profile-summary"><div className="avatar avatar-blue large">CR</div><div><h2>Carlos Ramírez</h2><p>Plomería y reparaciones</p><Verified /></div></div><div className="settings-list"><button onClick={() => setScreen("verification")}><ShieldCheck /><span><strong>Verificación de identidad</strong><small>Estado: Aprobada · Insignia activa</small></span><ChevronRight /></button></div><div className="profile-verification-cta"><div><strong>¿Aún no verificas tu identidad?</strong><p>Completa el proceso seguro con Truora para acceder a todas las funciones de JOBBI.</p></div><Button variant="secondary" onClick={() => setScreen("verification")}>Verificar con Truora <ArrowRight data-icon="inline-end" /></Button></div><div className="settings-list"><button onClick={() => setScreen("plans")}><Sparkles /><span><strong>Plan actual</strong><small>Free · 18% de comisión</small></span><ChevronRight /></button><button onClick={() => setScreen("reviews")}><Star /><span><strong>Reseñas recibidas</strong><small>4.9 · 42 reseñas</small></span><ChevronRight /></button></div><FaqDropdown role="Prestador" /></AppContent> }
+function ProviderCard({ prestador, onClick }: { prestador: TarjetaPrestador; onClick: () => void }) {
+  const oficio = prestador.ofertas?.[0]
+  return <button className="provider-card" onClick={onClick}>
+    <Avatar nombre={prestador.nombreCompleto} id={prestador.id} />
+    <div className="provider-main">
+      <div className="row-between">
+        <div><h3>{prestador.nombreCompleto}</h3><p>{oficio?.nombre ?? prestador.descripcion}</p></div>
+        {prestador.insigniaVerificado && <Verified />}
+      </div>
+      <div className="provider-meta">
+        <Rating value={prestador.calificacionPromedio} count={prestador.totalResenas} />
+        <span>{pesos(oficio?.tarifaReferencial ?? prestador.tarifaReferencialBase)} / servicio</span>
+      </div>
+      <span className="distance"><MapPin aria-hidden="true" /> {prestador.ubicacionPrincipal.barrio}, {prestador.ubicacionPrincipal.municipio}</span>
+    </div>
+    <ChevronRight aria-hidden="true" className="chevron" />
+  </button>
+}
+
+function BottomNav({ role, screen, setScreen }: { role: Role; screen: Screen; setScreen: (s: Screen) => void }) { const items = role === "Demandante" ? navDemandante : role === "Admin" ? navAdmin : navPrestador; return <nav className="bottom-nav" aria-label="Navegación principal">{items.map(([key, label]) => { const Icon = iconFor(label); return <button key={key} className={screen === key ? "active" : ""} onClick={() => setScreen(key as Screen)}><Icon aria-hidden="true" /><span>{label}</span></button> })}</nav> }
+
+/** Barra de sesión: quién entró, con qué rol, y cómo salir. */
+function SessionBar({ role, setRole, setScreen }: { role: Role; setRole: (r: Role) => void; setScreen: (s: Screen) => void }) {
+  const { sesion, salir } = useSesion()
+  if (!sesion) return null
+  return <div className="session-bar">
+    <Avatar nombre={sesion.usuario.nombreCompleto} id={sesion.usuario.id} />
+    <div className="session-identity">
+      <strong>{sesion.usuario.nombreCompleto}</strong>
+      <span>{sesion.rol}{sesion.verificado && <> · <ShieldCheck /> Verificado</>}</span>
+    </div>
+    {/* No hay cuenta de administrador: es una vista de métricas sobre los
+        mismos datos, por eso se ofrece como conmutador y no como login. */}
+    <button className={role === "Admin" ? "session-admin selected" : "session-admin"}
+      onClick={() => { const volver = role === "Admin"; setRole(volver ? sesion.rol : "Admin"); setScreen(volver ? (sesion.rol === "Prestador" ? "dashboard" : "search") : "admin") }}>
+      {role === "Admin" ? "Salir de métricas" : "Métricas"}
+    </button>
+    <button className="session-exit" onClick={salir} aria-label="Cerrar sesión"><LogOut /></button>
+  </div>
+}
+
+function AppShell({ children, role, setRole, screen, setScreen }: { children: React.ReactNode; role: Role; setRole: (r: Role) => void; screen: Screen; setScreen: (s: Screen) => void }) {
+  return <div className="app-frame"><SessionBar role={role} setRole={setRole} setScreen={setScreen} />{children}<BottomNav role={role} screen={screen} setScreen={setScreen} /></div>
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding
+// ---------------------------------------------------------------------------
+
+function MapScreen({ setScreen }: { setScreen: (s: Screen) => void }) { return <div className="center-screen"><div className="brand-lockup"><div className="brand-mark">J</div><span>JOBBI</span></div><div className="eyebrow">MAPA DE NAVEGACIÓN</div><h1>Oficios confiables,<br /><em>cerca de ti.</em></h1><p className="lead">Conecta con personas verificadas para resolver lo que necesitas en Medellín y el Valle de Aburrá.</p><div className="map-list">{navigationTree.map((group, index) => <div className="map-group" key={group.title}><div className="map-index">0{index + 1}</div><div><strong>{group.title}</strong><p>{group.items.join("  ·  ")}</p></div></div>)}</div><Button onClick={() => setScreen("landing")}>Explorar JOBBI <ArrowRight data-icon="inline-end" /></Button></div> }
+
+function Landing({ setScreen }: { setScreen: (s: Screen) => void }) {
+  return <div className="center-screen landing">
+    <div className="brand-lockup"><div className="brand-mark">J</div><span>JOBBI</span></div>
+    <div className="landing-art"><Sparkles /><div>Tu próxima solución<br /><strong>empieza aquí.</strong></div><span className="art-dot one" /><span className="art-dot two" /></div>
+    <div><div className="eyebrow">EL MARKETPLACE DE OFICIOS</div><h1>Todo resuelto.<br /><em>Sin complicaciones.</em></h1><p className="lead">Encuentra, contrata y confía en profesionales verificados cerca de ti.</p></div>
+    <Button onClick={() => setScreen("role")}>Crear una cuenta <ArrowRight data-icon="inline-end" /></Button>
+    <Button variant="secondary" onClick={() => setScreen("login")}>Ya tengo cuenta</Button>
+    <button className="text-button" onClick={() => setScreen("map")}>Ver mapa de navegación</button>
+  </div>
+}
+
+function RoleScreen({ setScreen, setRole }: { setScreen: (s: Screen) => void; setRole: (r: Role) => void }) { const [role, setLocal] = useState<Role>("Demandante"); return <div className="center-screen"><PageHeader title="¿Cómo usarás JOBBI?" subtitle="Puedes cambiarlo después" onBack={() => setScreen("landing")} /><div className="role-cards"><button className={role === "Demandante" ? "role-card active" : "role-card"} onClick={() => setLocal("Demandante")}><div className="role-icon"><Search /></div><strong>Soy Demandante</strong><p>Necesito contratar un oficio para mi hogar o negocio.</p><span>Buscar profesionales <ArrowRight /></span></button><button className={role === "Prestador" ? "role-card active" : "role-card"} onClick={() => setLocal("Prestador")}><div className="role-icon peach"><BriefcaseBusiness /></div><strong>Soy Prestador</strong><p>Ofrezco mis servicios y quiero encontrar clientes.</p><span>Ofrecer mis oficios <ArrowRight /></span></button></div><Button onClick={() => { setRole(role); setScreen("register") }}>Continuar <ArrowRight data-icon="inline-end" /></Button><button className="text-button" onClick={() => setScreen("login")}>Ya tengo cuenta, quiero entrar</button></div> }
+
+function Login({ setScreen, entrar }: { setScreen: (s: Screen) => void; entrar: (s: Sesion) => void }) {
+  const [correo, setCorreo] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [cargando, setCargando] = useState(false)
+
+  const enviar = async () => {
+    const limpio = correo.trim()
+    if (!limpio) { setError("Escribe tu correo para continuar."); return }
+    setCargando(true); setError(null)
+    try {
+      entrar(await api.login(limpio))
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 404
+          ? "No encontramos una cuenta con ese correo. Revísalo o crea una cuenta nueva."
+          : e instanceof ApiError ? e.message
+          : "No pudimos conectar con el servidor. Verifica que el backend esté arriba.",
+      )
+      setCargando(false)
+    }
+  }
+
+  return <div className="center-screen login-screen">
+    <div className="brand-lockup"><div className="brand-mark">J</div><span>JOBBI</span></div>
+    <div>
+      <div className="eyebrow">BIENVENIDO DE VUELTA</div>
+      <h1>Entra a<br /><em>tu cuenta.</em></h1>
+      <p className="lead">Te reconocemos por tu correo. Según tu perfil, te llevamos a buscar oficios o a gestionar tus servicios.</p>
+    </div>
+
+    <form className="login-form" onSubmit={event => { event.preventDefault(); enviar() }}>
+      <label>Correo electrónico
+        <div className="input-icon">
+          <Mail />
+          <input type="email" autoComplete="email" autoFocus placeholder="tu@correo.com" value={correo}
+            onChange={event => { setCorreo(event.target.value); setError(null) }}
+            aria-invalid={Boolean(error)} aria-describedby={error ? "login-error" : undefined} />
+        </div>
+      </label>
+      {error && <div className="form-error" id="login-error" role="alert"><CircleAlert /> {error}</div>}
+      <Button type="submit" disabled={cargando || !correo.trim()}>
+        {cargando ? <><Loader2 className="spin" /> Entrando…</> : <>Entrar <ArrowRight data-icon="inline-end" /></>}
+      </Button>
+    </form>
+
+    <div className="login-demo">
+      <span className="eyebrow">PRIMERA VEZ AQUÍ</span>
+      <p>JOBBI arranca sin ninguna cuenta: no hay usuarios de ejemplo. Crea la tuya y el catálogo se irá construyendo con lo que registren los prestadores.</p>
+      <Button variant="secondary" onClick={() => setScreen("role")}>Crear una cuenta <ArrowRight data-icon="inline-end" /></Button>
+    </div>
+  </div>
+}
+
+function Register({ role, setScreen, entrar }: { role: Role; setScreen: (s: Screen) => void; entrar: (s: Sesion) => void }) {
+  const esPrestador = role === "Prestador"
+  const [campos, setCampos] = useState({ nombreCompleto: "", correo: "", telefono: "", tipoDocumento: "CC", numeroDocumento: "", municipio: "Medellín", barrio: "", descripcion: "", tarifaReferencialBase: "", oficio: "", categoria: CATEGORIAS_SUGERIDAS[0], anosExperiencia: "" })
+  const [error, setError] = useState<string | null>(null)
+  const [cargando, setCargando] = useState(false)
+  const cambiar = (clave: keyof typeof campos) => (event: { target: { value: string } }) => { setCampos(previo => ({ ...previo, [clave]: event.target.value })); setError(null) }
+
+  const completo = campos.nombreCompleto.trim().length >= 3 && campos.correo.includes("@")
+    && campos.telefono.trim().length >= 7 && campos.numeroDocumento.trim().length >= 4
+    // Sin catálogo sembrado, el oficio del prestador es lo que lo hace
+    // encontrable: se pide en el registro, no después.
+    && (!esPrestador || campos.oficio.trim().length >= 3)
+
+  const enviar = async () => {
+    setCargando(true); setError(null)
+    try {
+      const sesion = await api.registro({
+        nombreCompleto: campos.nombreCompleto.trim(),
+        correo: campos.correo.trim(),
+        telefono: campos.telefono.trim(),
+        tipoDocumento: campos.tipoDocumento,
+        numeroDocumento: campos.numeroDocumento.trim(),
+        rol: esPrestador ? "Prestador" : "Demandante",
+        municipio: campos.municipio || undefined,
+        barrio: campos.barrio || undefined,
+        descripcion: esPrestador ? campos.descripcion || undefined : undefined,
+        tarifaReferencialBase: esPrestador && campos.tarifaReferencialBase ? Number(campos.tarifaReferencialBase) : undefined,
+      })
+
+      if (esPrestador && sesion.perfilPrestador) {
+        // El oficio y su categoría se crean si aún no existen: así el catálogo
+        // crece con cada registro en vez de venir precargado.
+        const { oficio } = await api.altaOficio(campos.categoria, campos.oficio.trim())
+        await api.altaOferta({
+          prestadorId: sesion.perfilPrestador.id,
+          oficioId: oficio.id,
+          tarifaReferencial: Number(campos.tarifaReferencialBase) || 0,
+          anosExperiencia: Number(campos.anosExperiencia) || 0,
+        })
+      }
+      entrar(sesion)
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 409
+          ? "Ya existe una cuenta con ese correo. Inicia sesión en su lugar."
+          : e instanceof ApiError ? e.message
+          : "No pudimos conectar con el servidor. Verifica que el backend esté arriba.",
+      )
+      setCargando(false)
+    }
+  }
+
+  return <div className="center-screen">
+    <PageHeader title="Crea tu cuenta" subtitle={esPrestador ? "Perfil de prestador" : "Perfil de demandante"} onBack={() => setScreen("role")} />
+    <form className="form-stack" onSubmit={event => { event.preventDefault(); if (completo) enviar() }}>
+      <label>Nombre completo<input value={campos.nombreCompleto} onChange={cambiar("nombreCompleto")} placeholder="Ej. Laura Martínez" autoComplete="name" /></label>
+      <label>Correo electrónico<input type="email" value={campos.correo} onChange={cambiar("correo")} placeholder="tu@correo.com" autoComplete="email" /></label>
+      <label>Número de teléfono<div className="phone-input"><span>+57</span><input value={campos.telefono} onChange={cambiar("telefono")} placeholder="300 000 0000" autoComplete="tel" /></div></label>
+      <div className="form-grid">
+        <label>Tipo de documento<select value={campos.tipoDocumento} onChange={cambiar("tipoDocumento")}><option>CC</option><option>CE</option><option>PPT</option></select></label>
+        <label>Número de documento<input value={campos.numeroDocumento} onChange={cambiar("numeroDocumento")} placeholder="1000000000" /></label>
+      </div>
+      <div className="form-grid">
+        <label>Municipio<select value={campos.municipio} onChange={cambiar("municipio")}>{MUNICIPIOS.map(m => <option key={m}>{m}</option>)}</select></label>
+        <label>Barrio<input value={campos.barrio} onChange={cambiar("barrio")} placeholder="Laureles" /></label>
+      </div>
+      {esPrestador && <>
+        <label>¿Qué oficio ofreces?<input value={campos.oficio} onChange={cambiar("oficio")} placeholder="Ej. Plomería y reparaciones" /></label>
+        <div className="form-grid">
+          <label>Categoría<select value={campos.categoria} onChange={cambiar("categoria")}>{CATEGORIAS_SUGERIDAS.map(c => <option key={c}>{c}</option>)}</select></label>
+          <label>Años de experiencia<input type="number" min="0" max="70" value={campos.anosExperiencia} onChange={cambiar("anosExperiencia")} placeholder="5" /></label>
+        </div>
+        <label>Sobre ti y tus servicios<textarea value={campos.descripcion} onChange={cambiar("descripcion")} placeholder="Cuéntales a tus clientes qué haces y con cuánta experiencia." /></label>
+        <label>Tarifa de referencia<div className="input-icon"><span>$</span><input type="number" min="0" value={campos.tarifaReferencialBase} onChange={cambiar("tarifaReferencialBase")} placeholder="85000" /></div></label>
+      </>}
+      {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+
+      <div className="verification-note"><ShieldCheck /><p><strong>Verificación de identidad aprobada.</strong><br />En esta fase la validación con Truora se da por superada, así que tu cuenta queda activa de inmediato.</p></div>
+
+      <Button type="submit" disabled={!completo || cargando}>
+        {cargando ? <><Loader2 className="spin" /> Creando cuenta…</> : <>Crear cuenta <ArrowRight data-icon="inline-end" /></>}
+      </Button>
+    </form>
+    <p className="fine-print center">Al continuar aceptas nuestros términos y condiciones y política de privacidad.</p>
+  </div>
+}
+
+function Coverage({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) { return <div className="center-screen"><div className="status-illustration warning"><MapPin /></div><div className="eyebrow">COBERTURA ACTUAL</div><h1>Aún no llegamos<br /><em>a tu ciudad.</em></h1><p className="lead">Por ahora JOBBI está disponible en Medellín y el Valle de Aburrá. Te avisaremos cuando lleguemos a tu zona.</p><div className="coverage-card"><div><MapPin /><div><strong>Medellín y Valle de Aburrá</strong><span>Disponible ahora</span></div></div><Check /></div><Button onClick={() => setScreen(role === "Demandante" ? "search" : "dashboard")}>Entrar a JOBBI <ArrowRight data-icon="inline-end" /></Button></div> }
+
+// ---------------------------------------------------------------------------
+// Demandante
+// ---------------------------------------------------------------------------
+
+function SearchScreen({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion, seleccionar } = useSesion()
+  const [categoriaId, setCategoriaId] = useState<string | undefined>(undefined)
+  const catalogo = useDatos(() => api.bffCatalogo({ categoriaId }), [categoriaId ?? "todas"])
+  const avisos = useDatos(() => api.resumenNotificaciones(sesion!.usuario.id), [sesion?.usuario.id])
+  const nombrePila = sesion?.usuario.nombreCompleto.split(" ")[0] ?? ""
+
+  return <AppContent>
+    <PageHeader title={`Hola, ${nombrePila}`} subtitle="¿Qué necesitas resolver hoy?"
+      action={<button className="icon-button" onClick={() => setScreen("notifications")} aria-label="Notificaciones"><Bell />{(avisos.datos?.noLeidas ?? 0) > 0 && <span className="notification-dot" />}</button>} />
+    <div className="search-hero">
+      <div className="eyebrow">ENCUENTRA LO QUE NECESITAS</div>
+      <h2>Un oficio de confianza,<br /><em>a un clic de distancia.</em></h2>
+      <button className="search-field" onClick={() => setScreen("results")}><Search /><span>¿Qué oficio buscas?</span><ArrowRight /></button>
+    </div>
+    <Consulta estado={catalogo}>{datos => <>
+      <section>
+        <div className="section-heading"><h2>Categorías</h2></div>
+        <div className="category-row">
+          <button className={!categoriaId ? "category active" : "category"} onClick={() => setCategoriaId(undefined)}><span className="category-icon c0" />Todos</button>
+          {(datos.categorias ?? []).map((c: Categoria, i: number) => (
+            <button key={c.id} className={categoriaId === c.id ? "category active" : "category"} onClick={() => setCategoriaId(c.id)}>
+              <span className={`category-icon c${(i + 1) % 5}`} />{c.nombre}
+            </button>
+          ))}
+        </div>
+      </section>
+      <section>
+        <div className="section-heading"><h2>Prestadores cerca de ti</h2><button className="text-button" onClick={() => { seleccionar({ categoriaId }); setScreen("results") }}>Ver todos</button></div>
+        {(datos.prestadores?.items.length ?? 0) === 0
+          ? <EmptyState title="No hay prestadores en esta categoría" text="Prueba con otra categoría o vuelve a Todos." action="Ver todos" onClick={() => setCategoriaId(undefined)} />
+          : <div className="provider-list">{(datos.prestadores?.items ?? []).slice(0, 3).map((p: any) => <ProviderCard key={p.id} prestador={p} onClick={() => { seleccionar({ prestadorId: p.id }); setScreen("provider") }} />)}</div>}
+      </section>
+    </>}</Consulta>
+  </AppContent>
+}
+
+function Results({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { seleccion, seleccionar } = useSesion()
+  const [orden, setOrden] = useState<"calificacion" | "tarifa">("calificacion")
+  const catalogo = useDatos(() => api.bffCatalogo({ categoriaId: seleccion.categoriaId }), [seleccion.categoriaId ?? "todas"])
+
+  return <AppContent>
+    <PageHeader title="Resultados" subtitle={catalogo.datos ? `${catalogo.datos.prestadores?.total ?? 0} prestadores disponibles` : "Cargando…"} onBack={() => setScreen("search")} />
+    <div className="filter-bar">
+      <button className={orden === "calificacion" ? "filter active" : "filter"} onClick={() => setOrden("calificacion")}>Mejor calificados</button>
+      <button className={orden === "tarifa" ? "filter active" : "filter"} onClick={() => setOrden("tarifa")}>Menor tarifa</button>
+    </div>
+    <Consulta estado={catalogo} filas={3}>{datos => {
+      const lista = [...(datos.prestadores?.items ?? [])].sort((a: any, b: any) =>
+        orden === "tarifa" ? a.tarifaReferencialBase - b.tarifaReferencialBase : b.calificacionPromedio - a.calificacionPromedio)
+      if (!lista.length) return <EmptyState title="No encontramos prestadores" text="Prueba ampliando el radio de búsqueda o cambia tus filtros." action="Volver a buscar" onClick={() => setScreen("search")} />
+      return <div className="provider-list">{lista.map((p: any) => <ProviderCard key={p.id} prestador={p} onClick={() => { seleccionar({ prestadorId: p.id }); setScreen("provider") }} />)}</div>
+    }}</Consulta>
+  </AppContent>
+}
+
+function ProviderProfile({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion, seleccion, seleccionar } = useSesion()
+  const ficha = useDatos(() => api.bffPrestador(seleccion.prestadorId!), [seleccion.prestadorId])
+  const [contactando, setContactando] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // "Contactar" no es solo navegar: abre el Contacto en Mercado y la
+  // Conversación en Comunicación, y deja el chat listo con ese hilo activo.
+  const contactar = async () => {
+    const demandanteId = sesion?.perfilDemandante?.id
+    if (!demandanteId || !seleccion.prestadorId) return
+    setContactando(true); setError(null)
+    try {
+      const { conversacion } = await api.contactar(demandanteId, seleccion.prestadorId)
+      seleccionar({ conversacionId: conversacion.id })
+      setScreen("chat")
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No pudimos abrir el chat. Intenta de nuevo.")
+      setContactando(false)
+    }
+  }
+
+  if (!seleccion.prestadorId) return <AppContent><PageHeader title="Perfil del prestador" onBack={() => setScreen("results")} /><EmptyState title="Elige un prestador" text="Vuelve a los resultados y selecciona a alguien para ver su perfil." action="Ver resultados" onClick={() => setScreen("results")} /></AppContent>
+
+  return <AppContent>
+    <PageHeader title="Perfil del prestador" onBack={() => setScreen("results")} />
+    <Consulta estado={ficha} filas={3}>{datos => {
+      const p = datos.perfil
+      const pila = p.nombreCompleto.split(" ")[0]
+      return <>
+        <div className="profile-hero">
+          <Avatar nombre={p.nombreCompleto} id={p.id} large />
+          <h2>{p.nombreCompleto}</h2>
+          <p>{datos.oficios?.items[0]?.oficio.nombre ?? p.descripcion}</p>
+          {p.insigniaVerificado && <Verified />}
+          <Rating value={p.calificacionPromedio} count={p.totalResenas} />
+          <span className="distance"><MapPin /> {p.ubicacionPrincipal.barrio}, {p.ubicacionPrincipal.municipio}</span>
+        </div>
+        <div className="profile-stats">
+          <div><strong>{datos.oficios?.items[0]?.anosExperiencia ?? 0} años</strong><span>Experiencia</span></div>
+          <div><strong>{datos.contrataciones?.totalCompletadas ?? 0}</strong><span>Contrataciones</span></div>
+          <div><strong>{pesos(p.tarifaReferencialBase)}</strong><span>Tarifa desde</span></div>
+        </div>
+        <section className="detail-section"><h2>Sobre {pila}</h2><p>{p.descripcion}</p></section>
+        <section className="detail-section">
+          <div className="section-heading"><h2>Oficios ofrecidos</h2>{p.planActual === "PRO" && <Badge tone="brand">Plan Pro</Badge>}</div>
+          <div className="chips">{(datos.oficios?.items ?? []).map(o => <span key={o.oficio.id}>{o.oficio.nombre} · {pesos(o.tarifaReferencial)}</span>)}</div>
+        </section>
+        {(datos.ultimasResenas?.items.length ?? 0) > 0 && <section className="detail-section">
+          <div className="section-heading"><h2>Reseñas recientes</h2></div>
+          <div className="review-list">{(datos.ultimasResenas?.items ?? []).map((r: Resena) => (
+            <div className="review" key={r.id}><div className="row-between"><Rating value={r.puntuacion} /><span className="review-date">{fecha(r.fecha)}</span></div><p>{r.comentario}</p></div>
+          ))}</div>
+        </section>}
+        {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+        <div className="sticky-action">
+          <Button onClick={contactar} disabled={contactando}>
+            {contactando ? <><Loader2 className="spin" /> Abriendo chat…</> : <>Contactar a {pila} <MessageCircle data-icon="inline-end" /></>}
+          </Button>
+        </div>
+      </>
+    }}</Consulta>
+  </AppContent>
+}
+
+/**
+ * Confirmación de tarifa dentro del chat.
+ *
+ * El servicio no nace de la conversación: nace de que las dos partes acepten
+ * un valor. Mientras solo haya aceptado una, la otra ve el botón de aceptar;
+ * cuando aceptan ambas se crea la contratación y, con ella, la comisión queda
+ * congelada al plan que el prestador tenga en ese instante.
+ */
+function PanelTarifa({ hilo, onCambio, setScreen }: { hilo: ConversacionEnBandeja; onCambio: () => void; setScreen: (s: Screen) => void }) {
+  const { sesion, seleccionar } = useSesion()
+  const esDemandante = sesion?.rol === "Demandante"
+  const rol = esDemandante ? "DEMANDANTE" : "PRESTADOR"
+  const [proponiendo, setProponiendo] = useState(false)
+  const [valor, setValor] = useState("")
+  const [medioPago, setMedioPago] = useState("EFECTIVO")
+  const [enviando, setEnviando] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const prestadorId = hilo.contacto.prestadorId
+  const comision = useDatos(() => api.comisionVigente(prestadorId), [prestadorId])
+  const acuerdo = hilo.acuerdo
+  const yaAcepte = acuerdo ? (esDemandante ? acuerdo.aceptadoDemandante : acuerdo.aceptadoPrestador) : false
+
+  const ejecutar = async (accion: () => Promise<unknown>) => {
+    setEnviando(true); setError(null)
+    try {
+      await accion()
+      setProponiendo(false)
+      setValor("")
+      onCambio()
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No pudimos registrar la tarifa.")
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  const proponer = () => ejecutar(() => api.proponerTarifa({
+    contactoId: hilo.contacto.id,
+    conversacionId: hilo.id,
+    demandanteId: hilo.contacto.demandanteId,
+    prestadorId,
+    valorPropuesto: Number(valor),
+    medioPago,
+    propuestoPor: rol,
+  }))
+
+  // El servicio ya existe: el panel deja de negociar y pasa a ser el acceso a él.
+  if (acuerdo?.estado === "ACEPTADO" && hilo.contratacion) {
+    const c = hilo.contratacion
+    return <div className="tarifa-panel confirmado">
+      <div className="row-between">
+        <div><span className="eyebrow">SERVICIO CONFIRMADO</span><strong>{pesos(c.valorAcordado)}</strong></div>
+        <Badge tone={tonoEstado(c.estado)}>{enTitulo(c.estado)}</Badge>
+      </div>
+      <p className="fine-print">
+        {enTitulo(c.medioPago)} · comisión {pesos(c.montoComision)} ({Math.round(c.porcentajeComisionAplicado * 100)}%)
+        {acuerdo.planPrestadorAlAcordar && <> · congelada con el plan {acuerdo.planPrestadorAlAcordar} del día del acuerdo</>}
+      </p>
+      <Button variant="secondary" onClick={() => { seleccionar({ contratacionId: c.id }); setScreen(esDemandante ? "tracking" : "checkin") }}>
+        {esDemandante ? "Ver el estado del servicio" : "Gestionar check-in / check-out"} <ArrowRight data-icon="inline-end" />
+      </Button>
+    </div>
+  }
+
+  // Hay una propuesta abierta: quien no la ha aceptado decide.
+  if (acuerdo?.estado === "PENDIENTE" && !proponiendo) {
+    return <div className="tarifa-panel">
+      <div className="row-between">
+        <div><span className="eyebrow">TARIFA PROPUESTA</span><strong>{pesos(acuerdo.valorPropuesto)}</strong></div>
+        <Badge tone="warning">{yaAcepte ? "Esperando a la otra parte" : "Requiere tu confirmación"}</Badge>
+      </div>
+      <p className="fine-print">
+        {enTitulo(acuerdo.medioPago)} · propuesta por {acuerdo.propuestoPor === "DEMANDANTE" ? "el demandante" : "el prestador"}
+        {comision.datos && <> · al confirmar, la comisión queda en {Math.round(comision.datos.porcentajeComision * 100)}% (plan {comision.datos.plan})</>}
+      </p>
+      {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+      {yaAcepte
+        ? <Button variant="secondary" onClick={() => setProponiendo(true)} disabled={enviando}>Proponer otro valor</Button>
+        : <div className="tarifa-acciones">
+            <Button onClick={() => ejecutar(() => api.aceptarTarifa(acuerdo.id, rol))} disabled={enviando}>
+              {enviando ? <><Loader2 className="spin" /> Confirmando…</> : <><Check data-icon="inline-start" /> Confirmar tarifa</>}
+            </Button>
+            <Button variant="secondary" onClick={() => setProponiendo(true)} disabled={enviando}>Proponer otro valor</Button>
+          </div>}
+    </div>
+  }
+
+  if (!proponiendo) return <div className="tarifa-panel">
+    <div><span className="eyebrow">ANTES DE EMPEZAR</span><strong>Acuerden la tarifa del servicio</strong></div>
+    <p className="fine-print">El servicio se crea cuando ambas partes confirman el mismo valor. La comisión se fija con el plan del prestador en ese momento y no cambia después.</p>
+    <Button onClick={() => setProponiendo(true)}><CreditCard data-icon="inline-start" /> Confirmar tarifa</Button>
+  </div>
+
+  return <div className="tarifa-panel">
+    <div><span className="eyebrow">PROPONER TARIFA</span><strong>¿Cuánto cuesta este servicio?</strong></div>
+    <div className="form-grid">
+      <label>Valor acordado<div className="input-icon"><span>$</span>
+        <input type="number" min="1" value={valor} autoFocus onChange={e => { setValor(e.target.value); setError(null) }} placeholder="100000" />
+      </div></label>
+      <label>Medio de pago<select value={medioPago} onChange={e => setMedioPago(e.target.value)}>
+        <option value="EFECTIVO">Efectivo</option>
+        <option value="PLATAFORMA">Plataforma</option>
+      </select></label>
+    </div>
+    {comision.datos && <p className="fine-print">
+      Comisión que se aplicaría: {Math.round(comision.datos.porcentajeComision * 100)}% (plan {comision.datos.plan})
+      {Number(valor) > 0 && <> · {pesos(Number(valor) * comision.datos.porcentajeComision)}</>}
+    </p>}
+    {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+    <div className="tarifa-acciones">
+      <Button onClick={proponer} disabled={enviando || !(Number(valor) > 0)}>
+        {enviando ? <><Loader2 className="spin" /> Enviando…</> : <>Enviar propuesta <ArrowRight data-icon="inline-end" /></>}
+      </Button>
+      <Button variant="secondary" onClick={() => { setProponiendo(false); setError(null) }} disabled={enviando}>Cancelar</Button>
+    </div>
+  </div>
+}
+
+function Chat({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) {
+  const { sesion, seleccion, seleccionar } = useSesion()
+  const perfilId = perfilIdDe(sesion)
+  const esDemandante = sesion?.rol === "Demandante"
+  // La bandeja la compone el gateway: contactos de Mercado + conversaciones de
+  // Comunicación + el nombre de la otra parte desde Identidad. Pedirla por
+  // contacto (y no por quién ha escrito) hace visible un chat recién abierto.
+  const bandeja = useDatos(
+    () => api.bandeja(esDemandante ? { demandanteId: perfilId } : { prestadorId: perfilId }),
+    [perfilId, esDemandante],
+  )
+
+  const hilos = bandeja.datos?.items ?? []
+  const activa = hilos.find(h => h.id === seleccion.conversacionId) ?? hilos[0]
+  const mensajes = useDatos(() => api.mensajes(activa!.id), [activa?.id])
+
+  // Acordar una tarifa antes de haber hablado no tiene sentido: la propuesta
+  // aparece cuando las dos partes ya escribieron. Como en un hilo solo hay dos
+  // participantes, basta con que haya dos remitentes distintos. Un acuerdo que
+  // ya existe se sigue mostrando: para haber nacido, ya conversaron.
+  const remitentes = new Set((mensajes.datos?.items ?? []).map(m => m.remitenteId))
+  const conversacionIniciada = remitentes.size >= 2 || Boolean(activa?.acuerdo)
+
+  const [texto, setTexto] = useState("")
+  const [enviando, setEnviando] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const enviar = async () => {
+    const contenido = texto.trim()
+    if (!contenido || !activa || !sesion) return
+    setEnviando(true); setError(null)
+    try {
+      await api.enviarMensaje(activa.id, sesion.usuario.id, contenido)
+      setTexto("")
+      mensajes.recargar()
+      bandeja.recargar()
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No pudimos enviar el mensaje.")
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  return <AppContent>
+    <PageHeader title="Mensajes" subtitle={activa ? `Con ${activa.otraParteNombre}` : "Tus conversaciones"}
+      onBack={() => setScreen(role === "Demandante" ? "search" : "dashboard")} />
+    <Consulta estado={bandeja}>{() => {
+      if (!hilos.length) return <EmptyState
+        title="Aún no tienes conversaciones"
+        text={esDemandante
+          ? "Busca un prestador y pulsa «Contactar» para abrir el chat."
+          : "Cuando alguien te contacte, su mensaje aparecerá aquí."}
+        action={esDemandante ? "Buscar prestadores" : undefined}
+        onClick={esDemandante ? () => setScreen("search") : undefined} />
+
+      return <>
+        {hilos.length > 1 && <div className="conversation-tabs">{hilos.map(h => (
+          <button key={h.id} className={h.id === activa?.id ? "active" : ""}
+            onClick={() => seleccionar({ conversacionId: h.id })}>
+            {h.otraParteNombre}{h.noLeidos > 0 && <span className="unread">{h.noLeidos}</span>}
+          </button>
+        ))}</div>}
+
+        {activa && <div className="chat-identity">
+          <Avatar nombre={activa.otraParteNombre} id={activa.otraParteId} />
+          <div><strong>{activa.otraParteNombre}</strong><span>{activa.totalMensajes} mensaje(s)</span></div>
+        </div>}
+
+        {activa && (conversacionIniciada
+          ? <PanelTarifa hilo={activa} onCambio={bandeja.recargar} setScreen={setScreen} />
+          : <p className="chat-nota">Cuando ambos hayan escrito podrán acordar la tarifa del servicio.</p>)}
+
+        <div className="chat-body">
+          <Consulta estado={mensajes} filas={2}>{lista => lista.items.length
+            ? <>{lista.items.map((m: Mensaje) => (
+                <div key={m.id} className={`message ${m.remitenteId === sesion!.usuario.id ? "mine" : "theirs"}`}>
+                  <p>{m.contenido}</p><span>{hora(m.fechaEnvio)}</span>
+                </div>
+              ))}</>
+            : <p className="chat-vacio">Todavía no hay mensajes. Escribe el primero.</p>}
+          </Consulta>
+        </div>
+
+        {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+        <div className="chat-compose">
+          <input value={texto} onChange={e => setTexto(e.target.value)} placeholder="Escribe un mensaje..."
+            onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) enviar() }} />
+          <Button onClick={enviar} disabled={enviando || !texto.trim()}>
+            {enviando ? <Loader2 className="spin" /> : <Send />}
+          </Button>
+        </div>
+
+        <div className="chat-cta"><Button variant="secondary" onClick={() => setScreen(role === "Demandante" ? "tracking" : "requests")}>
+          {role === "Demandante" ? "Ver mis contrataciones" : "Ver solicitudes"} <ArrowRight data-icon="inline-end" />
+        </Button></div>
+      </>
+    }}</Consulta>
+  </AppContent>
+}
+
+function ContratacionCard({ contratacion, onClick }: { contratacion: Contratacion; onClick: () => void }) {
+  return <button className="job-card as-button" onClick={onClick}>
+    <div className="row-between">
+      <div><span className="eyebrow">{fecha(contratacion.fechaEjecucion ?? contratacion.fechaSolicitud)}</span><h3>{pesos(contratacion.valorAcordado)}</h3></div>
+      <Badge tone={tonoEstado(contratacion.estado)}>{enTitulo(contratacion.estado)}</Badge>
+    </div>
+    <p><CreditCard /> {enTitulo(contratacion.medioPago)} · Comisión {pesos(contratacion.montoComision)}</p>
+    <span className="distance">Ver detalle <ChevronRight /></span>
+  </button>
+}
+
+function Tracking({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion, seleccion, seleccionar } = useSesion()
+  const perfilId = perfilIdDe(sesion)
+  const lista = useDatos(() => api.contrataciones({ demandanteId: perfilId }), [perfilId])
+  const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId])
+
+  if (seleccion.contratacionId) return <AppContent>
+    <PageHeader title="Seguimiento" subtitle={`Contratación ${seleccion.contratacionId.slice(-4)}`} onBack={() => seleccionar({ contratacionId: undefined })} />
+    <Consulta estado={detalle} filas={3}>{datos => <>
+      <div className="tracking-card">
+        <div className="tracking-head">
+          <div><span className="eyebrow">{datos.oficio?.nombre ?? "SERVICIO"}</span><h2>{datos.prestador?.nombreCompleto ?? "Prestador"}</h2></div>
+          <span className="tracking-price">{pesos(datos.contratacion.valorAcordado)}</span>
+        </div>
+        <div className="timeline">{(datos.timeline?.pasos ?? []).map((paso, i) => (
+          <div className={`timeline-item ${paso.alcanzado ? "done" : ""}`} key={paso.estado}>
+            <div className="timeline-dot">{paso.alcanzado ? <Check /> : <span>{i + 1}</span>}</div>
+            <div><strong>{enTitulo(paso.estado)}</strong><span>{paso.alcanzado ? "Completado" : "Pendiente"}</span></div>
+          </div>
+        ))}</div>
+        {datos.timeline?.duracionMinutos != null && <p className="fine-print">Duración registrada entre check-in y check-out: {datos.timeline.duracionMinutos} minutos.</p>}
+      </div>
+      {datos.prestador && <div className="provider-mini">
+        <Avatar nombre={datos.prestador.nombreCompleto} id={datos.prestador.id} />
+        <div><strong>{datos.prestador.nombreCompleto}</strong><span>{datos.prestador.insigniaVerificado ? <><ShieldCheck /> Prestador verificado</> : "Sin verificar"}</span></div>
+        <button className="icon-button" onClick={() => setScreen("chat")}><MessageCircle /></button>
+      </div>}
+      {(datos.incidentes?.total ?? 0) > 0 && <div className="alert-box"><CircleAlert /><p><strong>{datos.incidentes!.total} incidente(s) reportado(s).</strong><br />{datos.incidentes!.items[0].evidenciaDescripcion}</p></div>}
+      {(datos.resenas?.total ?? 0) > 0 && <section className="detail-section"><div className="section-heading"><h2>Reseñas de esta contratación</h2></div><div className="review-list">{datos.resenas!.items.map(r => <div className="review" key={r.id}><div className="row-between"><Rating value={r.puntuacion} /><span className="review-date">{fecha(r.fecha)}</span></div><p>{r.comentario}</p></div>)}</div></section>}
+      {datos.contratacion.estado === "COMPLETADA" && <Button onClick={() => setScreen("rating")}>Calificar servicio <ArrowRight data-icon="inline-end" /></Button>}
+      <Button variant="danger" onClick={() => setScreen("incident")}>Reportar incidente</Button>
+    </>}</Consulta>
+  </AppContent>
+
+  return <AppContent>
+    <PageHeader title="Mis contrataciones" subtitle={lista.datos ? `${lista.datos.total} en total` : "Cargando…"} />
+    <Consulta estado={lista} filas={3}>{datos => datos.items.length
+      ? <div className="request-list">{datos.items.map(c => <ContratacionCard key={c.id} contratacion={c} onClick={() => seleccionar({ contratacionId: c.id })} />)}</div>
+      : <EmptyState title="Aún no tienes contrataciones" text="Cuando contrates a un prestador, harás seguimiento desde aquí." action="Buscar un oficio" onClick={() => setScreen("search")} />}
+    </Consulta>
+  </AppContent>
+}
+
+function RatingScreen({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) {
+  const { sesion, seleccion } = useSesion()
+  const esPrestador = role === "Prestador"
+  const [puntuacion, setPuntuacion] = useState(0)
+  const [comentario, setComentario] = useState("")
+  const [enviando, setEnviando] = useState(false)
+  const [enviada, setEnviada] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId])
+
+  // Quien escribe es el perfil de quien entró; quien recibe, la otra parte de
+  // esta misma contratación. La reseña cuenta de inmediato para el promedio
+  // publicado del receptor.
+  const autorId = perfilIdDe(sesion)
+  const receptorId = esPrestador
+    ? detalle.datos?.contratacion.demandanteId
+    : detalle.datos?.contratacion.prestadorId
+
+  const publicar = async () => {
+    if (!seleccion.contratacionId || !autorId || !receptorId) return
+    setEnviando(true); setError(null)
+    try {
+      await api.publicarResena({
+        contratacionId: seleccion.contratacionId, autorId, receptorId,
+        puntuacion, comentario: comentario.trim(),
+      })
+      setEnviada(true)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No pudimos publicar la reseña.")
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  if (!seleccion.contratacionId) return <AppContent>
+    <PageHeader title="Califica tu experiencia" onBack={() => setScreen(esPrestador ? "dashboard" : "tracking")} />
+    <EmptyState title="Elige un servicio" text="Abre una contratación completada para calificarla."
+      action="Ver contrataciones" onClick={() => setScreen(esPrestador ? "requests" : "tracking")} />
+  </AppContent>
+
+  return <AppContent>
+    <PageHeader title="Califica tu experiencia" subtitle="Contratación completada"
+      onBack={() => setScreen(esPrestador ? "dashboard" : "tracking")} />
+    {enviada
+      ? <div className="success-state"><Check /><h2>Reseña publicada</h2>
+          <p>Ya cuenta para la reputación del perfil, que se recalculó con esta calificación.</p>
+          <Button onClick={() => setScreen(esPrestador ? "dashboard" : "tracking")}>Volver <ArrowRight data-icon="inline-end" /></Button>
+        </div>
+      : <>
+          <div className="rating-card">
+            <h2>{esPrestador ? "¿Cómo fue trabajar con tu cliente?" : "¿Cómo fue tu servicio?"}</h2>
+            <p>Tu opinión ayuda a otras personas a contratar con confianza.</p>
+            <div className="stars-input">{[1, 2, 3, 4, 5].map(i => (
+              <button key={i} aria-label={`${i} estrellas`} onClick={() => setPuntuacion(i)}>
+                <Star fill={i <= puntuacion ? "currentColor" : "none"} />
+              </button>
+            ))}</div>
+            <textarea value={comentario} onChange={e => setComentario(e.target.value)}
+              placeholder="Cuéntanos más sobre tu experiencia (opcional)" />
+          </div>
+          {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+          <Button disabled={!puntuacion || enviando || !receptorId} onClick={publicar}>
+            {enviando ? <><Loader2 className="spin" /> Publicando…</> : <>Publicar reseña <Check data-icon="inline-end" /></>}
+          </Button>
+        </>}
+  </AppContent>
+}
+
+function Incident({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { seleccion } = useSesion()
+  const [tipo, setTipo] = useState("TRABAJO_INCOMPLETO")
+  const [descripcion, setDescripcion] = useState("")
+  const [enviando, setEnviando] = useState(false)
+  const [enviado, setEnviado] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const reportar = async () => {
+    if (!seleccion.contratacionId || !descripcion.trim()) return
+    setEnviando(true); setError(null)
+    try {
+      await api.reportarIncidente(seleccion.contratacionId, tipo, descripcion.trim())
+      setEnviado(true)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No pudimos registrar el reporte.")
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  return <AppContent>
+    <PageHeader title="Reportar incidente" onBack={() => setScreen("tracking")} />
+    <div className="alert-box"><CircleAlert /><p><strong>Tu seguridad es prioridad.</strong><br />Nuestro equipo revisará el caso y te contactará.</p></div>
+    {enviado
+      ? <div className="success-state"><Check /><h2>Reporte registrado</h2><p>Queda abierto en el contexto de Soporte y aparecerá en el seguimiento de la contratación.</p><Button onClick={() => setScreen("tracking")}>Volver al seguimiento <ArrowRight data-icon="inline-end" /></Button></div>
+      : <>
+        <div className="form-stack">
+          <label>Tipo de incidente<select value={tipo} onChange={e => setTipo(e.target.value)}>
+            <option value="TRABAJO_INCOMPLETO">Trabajo incompleto</option>
+            <option value="COBRO_INDEBIDO">Cobro indebido</option>
+            <option value="RETRASO">Retraso</option>
+            <option value="DANO_MATERIAL">Daño material</option>
+          </select></label>
+          <label>Descripción<textarea value={descripcion} onChange={e => setDescripcion(e.target.value)} placeholder="Cuéntanos qué sucedió..." /></label>
+        </div>
+        {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+        <Button variant="danger" onClick={reportar} disabled={enviando || !descripcion.trim()}>
+          {enviando ? <><Loader2 className="spin" /> Enviando…</> : <>Enviar reporte <ArrowRight data-icon="inline-end" /></>}
+        </Button>
+      </>}
+  </AppContent>
+}
+
+function Notifications({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) {
+  const { sesion } = useSesion()
+  const lista = useDatos(() => api.notificaciones(sesion!.usuario.id), [sesion?.usuario.id])
+  return <AppContent>
+    <PageHeader title="Notificaciones" subtitle="Mantente al día" onBack={() => setScreen(role === "Demandante" ? "search" : "dashboard")} />
+    <Consulta estado={lista} filas={3}>{datos => datos.items.length
+      ? <div className="notification-list">{datos.items.map(n => (
+          <div className={`notification-item ${n.leida ? "" : "unread"}`} key={n.id}>
+            <div className={`notification-icon ${n.tipo.includes("APROBADA") || n.tipo.includes("ACEPTADA") ? "success" : "info"}`}><Bell /></div>
+            <div><strong>{enTitulo(n.tipo)}</strong><p>{n.contenido}</p><span>{fecha(n.fechaEnvio)} · {n.canal}</span></div>
+            {!n.leida && <span className="notification-dot static" />}
+          </div>
+        ))}</div>
+      : <EmptyState title="No tienes notificaciones" text="Te avisaremos cuando haya novedades sobre tus contrataciones." />}
+    </Consulta>
+  </AppContent>
+}
+
+function Profile({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) {
+  const { sesion, salir } = useSesion()
+  if (!sesion) return null
+  const u = sesion.usuario
+  const ubicacion = sesion.perfilDemandante?.ubicacionPrincipal ?? sesion.perfilPrestador?.ubicacionPrincipal
+  return <AppContent>
+    <PageHeader title="Mi perfil" subtitle="Gestiona tu información" onBack={() => setScreen(role === "Demandante" ? "search" : "dashboard")} />
+    <div className="profile-summary">
+      <Avatar nombre={u.nombreCompleto} id={u.id} large />
+      <div><h2>{u.nombreCompleto}</h2><p>{u.correo}</p><Badge tone="success"><Check /> Cuenta verificada</Badge></div>
+    </div>
+    <div className="settings-list">
+      <div className="setting-static"><MapPin /><span><strong>Ubicación principal</strong><small>{ubicacion ? `${ubicacion.barrio}, ${ubicacion.municipio}` : "Sin definir"}</small></span></div>
+      <div className="setting-static"><UserRound /><span><strong>Documento</strong><small>{u.tipoDocumento} {u.numeroDocumento}</small></span></div>
+      <div className="setting-static"><MessageCircle /><span><strong>Teléfono</strong><small>{u.telefono}</small></span></div>
+      <div className="setting-static"><CalendarDays /><span><strong>Miembro desde</strong><small>{fecha(u.fechaRegistro)}</small></span></div>
+    </div>
+    <Button variant="secondary" onClick={salir}><LogOut data-icon="inline-start" /> Cerrar sesión</Button>
+  </AppContent>
+}
+
+// ---------------------------------------------------------------------------
+// Prestador
+// ---------------------------------------------------------------------------
+
+function Dashboard({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion, seleccionar } = useSesion()
+  const prestadorId = sesion?.perfilPrestador?.id
+  const ficha = useDatos(() => api.bffPrestador(prestadorId!), [prestadorId])
+  const contrataciones = useDatos(() => api.contrataciones({ prestadorId, size: 5 }), [prestadorId])
+  const pila = sesion?.usuario.nombreCompleto.split(" ")[0] ?? ""
+
+  return <AppContent>
+    <PageHeader title={`Hola, ${pila}`} subtitle={new Date().toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" })}
+      action={<button className="icon-button" onClick={() => setScreen("notifications")} aria-label="Notificaciones"><Bell /></button>} />
+    <Consulta estado={ficha} filas={3}>{datos => <>
+      <div className="dashboard-hero">
+        <div><span className="eyebrow">ESTADO DE TU CUENTA</span><h2>Estás listo para trabajar</h2><p><span className="online-dot" /> Disponible para nuevas solicitudes</p></div>
+        {datos.perfil.insigniaVerificado && <Verified />}
+      </div>
+      <div className="metric-grid">
+        <div><span>Contrataciones</span><strong>{datos.contrataciones?.total ?? 0}</strong><small>{datos.contrataciones?.totalCompletadas ?? 0} completadas</small></div>
+        <div><span>Calificación</span><strong>{datos.perfil.calificacionPromedio.toFixed(1)} <Star fill="currentColor" /></strong><small>{datos.perfil.totalResenas} reseñas</small></div>
+      </div>
+      <section>
+        <div className="section-heading"><h2>Tus contrataciones</h2><button className="text-button" onClick={() => setScreen("requests")}>Ver todas</button></div>
+        <Consulta estado={contrataciones} filas={2}>{lista => lista.items.length
+          ? <div className="request-list">{lista.items.slice(0, 2).map(c => <ContratacionCard key={c.id} contratacion={c} onClick={() => { seleccionar({ contratacionId: c.id }); setScreen("checkin") }} />)}</div>
+          : <EmptyState title="Sin contrataciones todavía" text="Cuando alguien te contrate, aparecerá aquí." />}
+        </Consulta>
+      </section>
+      <section>
+        <div className="section-heading"><h2>Resumen de billetera</h2><button className="text-button" onClick={() => setScreen("wallet")}>Ver billetera</button></div>
+        <div className="wallet-mini"><WalletCards /><div><span>Comisiones acumuladas</span><strong>{pesos(datos.finanzas?.comisionesAcumuladas ?? 0)}</strong></div><ChevronRight /></div>
+      </section>
+    </>}</Consulta>
+  </AppContent>
+}
+
+function Requests({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion, seleccionar } = useSesion()
+  const prestadorId = sesion?.perfilPrestador?.id
+  const lista = useDatos(() => api.contrataciones({ prestadorId }), [prestadorId])
+  return <AppContent>
+    <PageHeader title="Solicitudes" subtitle="Tus contrataciones y oportunidades" onBack={() => setScreen("dashboard")} />
+    <Consulta estado={lista} filas={3}>{datos => datos.items.length
+      ? <div className="request-list">{datos.items.map(c => <ContratacionCard key={c.id} contratacion={c} onClick={() => { seleccionar({ contratacionId: c.id }); setScreen("checkin") }} />)}</div>
+      : <EmptyState title="Aún no tienes solicitudes" text="Cuando alguien necesite tus oficios, aparecerán aquí." action="Ver mi perfil" onClick={() => setScreen("profile")} />}
+    </Consulta>
+  </AppContent>
+}
+
+function Checkin({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { seleccion } = useSesion()
+  const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId])
+  const [marcando, setMarcando] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [cobro, setCobro] = useState<{ monto: number; saldo: number } | null>(null)
+
+  // El prestador no ve la línea de etapas del demandante: solo los dos botones
+  // que le tocan. Marcar la salida es además lo que dispara el cobro, porque
+  // con pago en efectivo no hay ningún otro momento en que la plataforma cobre.
+  const marcar = async (accion: "in" | "out") => {
+    if (!seleccion.contratacionId) return
+    setMarcando(true); setError(null)
+    try {
+      if (accion === "in") {
+        await api.checkIn(seleccion.contratacionId)
+      } else {
+        const { cobro: resultado } = await api.checkOut(seleccion.contratacionId)
+        if (resultado) setCobro({ monto: Math.abs(resultado.movimiento.monto), saldo: resultado.billetera.saldoPendiente })
+      }
+      detalle.recargar()
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No pudimos registrar la marca.")
+    } finally {
+      setMarcando(false)
+    }
+  }
+
+  if (!seleccion.contratacionId) return <AppContent><PageHeader title="Contratación activa" onBack={() => setScreen("dashboard")} /><EmptyState title="Elige una contratación" text="Abre una desde tus solicitudes para gestionar el check-in." action="Ver solicitudes" onClick={() => setScreen("requests")} /></AppContent>
+
+  return <AppContent>
+    <PageHeader title="Contratación activa" subtitle={`#${seleccion.contratacionId.slice(-4)}`} onBack={() => setScreen("requests")} />
+    <Consulta estado={detalle} filas={3}>{datos => {
+      const c = datos.contratacion
+      return <>
+        <div className="job-detail">
+          <div className="job-detail-top">
+            {datos.demandante && <Avatar nombre={datos.demandante.nombreCompleto} id={datos.demandante.id} />}
+            <div><h2>{datos.demandante?.nombreCompleto ?? "Cliente"}</h2><p><MapPin /> {datos.demandante?.ubicacionPrincipal.barrio}, {datos.demandante?.ubicacionPrincipal.municipio}</p></div>
+            <Badge tone={tonoEstado(c.estado)}>{enTitulo(c.estado)}</Badge>
+          </div>
+          <div className="time-block"><CalendarDays /><div><span>{fecha(c.fechaEjecucion ?? c.fechaSolicitud)}</span><strong>{datos.oficio?.nombre ?? "Servicio"} · {pesos(c.valorAcordado)}</strong></div></div>
+          <div className="checkin-status">
+            <div className={c.checkIn ? "check-step done" : "check-step current"}><div>{c.checkIn ? <Check /> : "1"}</div><span>Check-in{c.checkIn && ` · ${hora(c.checkIn)}`}</span></div>
+            <div className="check-line" />
+            <div className={c.checkOut ? "check-step done" : "check-step"}><div>{c.checkOut ? <Check /> : "2"}</div><span>Check-out{c.checkOut && ` · ${hora(c.checkOut)}`}</span></div>
+          </div>
+        </div>
+        <div className="summary-box"><span>Comisión aplicada</span><strong>{pesos(c.montoComision)} ({Math.round(c.porcentajeComisionAplicado * 100)}%)</strong><span>Medio de pago</span><strong>{enTitulo(c.medioPago)}</strong></div>
+        <p className="fine-print">Este porcentaje se fijó al cerrar el acuerdo y ya no cambia, aunque cambies de plan durante el servicio.</p>
+
+        {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+        {cobro && <div className="alert-box info"><WalletCards /><p><strong>Comisión cargada a tu billetera: {pesos(cobro.monto)}.</strong><br />El pago fue en efectivo, así que lo cobras tú y nos liquidas la comisión. Saldo pendiente: {pesos(cobro.saldo)}.</p></div>}
+
+        {!c.checkIn && <Button onClick={() => marcar("in")} disabled={marcando}>
+          {marcando ? <><Loader2 className="spin" /> Registrando…</> : <>Hacer check-in <Check data-icon="inline-end" /></>}
+        </Button>}
+        {c.checkIn && !c.checkOut && <Button onClick={() => marcar("out")} disabled={marcando}>
+          {marcando ? <><Loader2 className="spin" /> Cerrando servicio…</> : <>Hacer check-out <Check data-icon="inline-end" /></>}
+        </Button>}
+        {c.checkOut && <div className="success-state"><Check /><h2>Servicio completado</h2>
+          <p>Tu cliente ya puede dejarte una reseña, y tú puedes calificarlo a él.</p>
+          <Button variant="secondary" onClick={() => setScreen("rating")}>Calificar al cliente <Star data-icon="inline-end" /></Button>
+        </div>}
+
+        <Button variant="secondary" onClick={() => setScreen("chat")}>Contactar al cliente <MessageCircle data-icon="inline-end" /></Button>
+      </>
+    }}</Consulta>
+  </AppContent>
+}
+
+function Verification({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion } = useSesion()
+  const prestadorId = sesion?.perfilPrestador?.id
+  const estado = useDatos(() => api.estadoVerificacion(prestadorId!), [prestadorId])
+  return <AppContent>
+    <PageHeader title="Verificación de identidad" subtitle="Tu confianza es nuestra prioridad" onBack={() => setScreen("profile")} />
+    <div className="verification-panel pending">
+      <div className="verification-icon"><ShieldCheck /></div>
+      <Badge tone="success">Aprobada</Badge>
+      <h2>Tu identidad está verificada</h2>
+      <p>En esta fase la validación con Truora se da por superada, así que tu cuenta queda activa desde el registro y la insignia aparece de inmediato.</p>
+      <Consulta estado={estado} filas={1}>{datos => (
+        <div className="verification-benefits">
+          <span><Check /> {datos.aprobadas} de {datos.totalVerificaciones} verificaciones aprobadas</span>
+          {datos.tiposAprobados.map(tipo => <span key={tipo}><ShieldCheck /> {enTitulo(tipo)}</span>)}
+        </div>
+      )}</Consulta>
+    </div>
+  </AppContent>
+}
+
+function Plans({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion, actualizarPrestador } = useSesion()
+  const prestadorId = sesion?.perfilPrestador?.id
+  const actual = sesion?.perfilPrestador?.planActual ?? "FREE"
+  const planes = useDatos(() => api.planes(), ["planes"])
+  const [cambiando, setCambiando] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // El cambio de plan es inmediato y reversible: es la palanca con la que se
+  // demuestra en vivo qué comisión se congela en cada acuerdo.
+  const cambiar = async (plan: "FREE" | "PRO") => {
+    if (!prestadorId || plan === actual) return
+    setCambiando(plan); setError(null)
+    try {
+      const { perfil } = await api.cambiarPlan(prestadorId, plan)
+      actualizarPrestador(perfil)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No pudimos cambiar el plan.")
+    } finally {
+      setCambiando(null)
+    }
+  }
+
+  const porcentaje = (plan: string) =>
+    planes.datos?.items.find(p => p.plan === plan)?.porcentajeComision
+
+  const tarjeta = (plan: "FREE" | "PRO", titulo: string, ventajas: string[]) => {
+    const esActual = actual === plan
+    const pct = porcentaje(plan)
+    const mensual = planes.datos?.items.find(p => p.plan === plan)?.valorMensual ?? 0
+    return <div className={`plan-card ${plan === "PRO" ? "pro " : ""}${esActual ? "current" : ""}`}>
+      <div className="row-between"><h3>{titulo}</h3>{esActual && <Badge tone="success">Actual</Badge>}</div>
+      <strong>{pct !== undefined ? `${Math.round(pct * 100)}%` : "—"} <small>comisión</small></strong>
+      {mensual > 0 && <span className="monthly">{pesos(mensual)} COP / mes</span>}
+      <ul>{ventajas.map(v => <li key={v}><Check /> {v}</li>)}</ul>
+      <Button variant={esActual ? "secondary" : "primary"} disabled={esActual || cambiando !== null} onClick={() => cambiar(plan)}>
+        {cambiando === plan ? <><Loader2 className="spin" /> Cambiando…</> : esActual ? "Tu plan actual" : `Cambiar a ${titulo}`}
+      </Button>
+    </div>
+  }
+
+  return <AppContent>
+    <PageHeader title="Planes para Prestadores" subtitle="Crece con JOBBI" onBack={() => setScreen("profile")} />
+    <div className="plans-intro"><Sparkles /><h2>Gana más en cada contratación</h2><p>Tu plan vive en Identidad y su tarifa en Monetización. Cambiarlo aquí escribe en los dos.</p></div>
+    {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
+    <Consulta estado={planes} filas={2}>{() => <div className="plan-grid">
+      {tarjeta("FREE", "Free", ["Perfil público", "Recibe solicitudes", "Reseñas verificadas"])}
+      {tarjeta("PRO", "Pro", ["Todo lo de Free", "Mayor visibilidad", "Soporte prioritario"])}
+    </div>}</Consulta>
+    <div className="alert-box info"><LockKeyhole /><p>
+      <strong>El cambio aplica hacia adelante.</strong><br />
+      La comisión de cada servicio se congela cuando ambas partes confirman la tarifa: los acuerdos ya cerrados conservan el porcentaje de ese día aunque cambies de plan durante el servicio.
+    </p></div>
+  </AppContent>
+}
+
+function Wallet({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion } = useSesion()
+  const prestadorId = sesion?.perfilPrestador?.id
+  const resumen = useDatos(() => api.resumenFinanciero(prestadorId!), [prestadorId])
+  const billeteraId = resumen.datos?.billetera?.id
+  const movimientos = useDatos(() => api.movimientos(billeteraId!), [billeteraId])
+
+  return <AppContent>
+    <PageHeader title="Billetera" subtitle="Gestiona tus ingresos" onBack={() => setScreen("dashboard")} />
+    <Consulta estado={resumen} filas={2}>{datos => {
+      const b = datos.billetera
+      return <>
+        <div className={`wallet-balance ${b?.bloqueada ? "blocked" : ""}`}>
+          <span>Saldo pendiente</span>
+          <strong>{pesos(b?.saldoPendiente ?? 0)} <small>COP</small></strong>
+          <p>{b?.bloqueada ? <><LockKeyhole /> Billetera bloqueada por saldo superior al umbral</> : <><Clock3 /> Se liquida cada viernes</>}</p>
+        </div>
+        {datos.suscripcionActiva && <div className="alert-box info"><Sparkles /><p><strong>Suscripción Pro activa.</strong><br />Renueva el {fecha(datos.suscripcionActiva.fechaRenovacion)} por {pesos(datos.suscripcionActiva.valorMensual)}.</p></div>}
+        <section>
+          <div className="section-heading"><h2>Movimientos</h2><span className="fine-print">{datos.totalMovimientos} en total</span></div>
+          <Consulta estado={movimientos} filas={2}>{lista => lista.items.length
+            ? <div className="movement-list">{lista.items.map(m => (
+                <div className="movement" key={m.id}>
+                  <div className="movement-icon"><WalletCards /></div>
+                  <div><strong>{enTitulo(m.tipo)}</strong><span>{fecha(m.fecha)}</span></div>
+                  <b className={m.monto > 0 ? "positive" : ""}>{m.monto > 0 ? "+" : "−"}{pesos(Math.abs(m.monto))}</b>
+                </div>
+              ))}</div>
+            : <EmptyState title="Sin movimientos" text="Tus comisiones y abonos aparecerán aquí." />}
+          </Consulta>
+        </section>
+      </>
+    }}</Consulta>
+  </AppContent>
+}
+
+function Reviews({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion } = useSesion()
+  const prestadorId = sesion?.perfilPrestador?.id
+  const resumen = useDatos(() => api.resumenResenas(prestadorId!), [prestadorId])
+  const lista = useDatos(() => api.resenas({ receptorId: prestadorId }), [prestadorId])
+  return <AppContent>
+    <PageHeader title="Reseñas recibidas" subtitle="Tu reputación en JOBBI" onBack={() => setScreen("profile")} />
+    <Consulta estado={resumen} filas={1}>{datos => (
+      <div className="review-summary"><strong>{datos.promedio.toFixed(1)}</strong><div><Rating value={datos.promedio} /><span>{datos.total} reseñas aprobadas</span></div></div>
+    )}</Consulta>
+    <Consulta estado={lista} filas={3}>{datos => datos.items.length
+      ? <div className="review-list">{datos.items.map(r => (
+          <div className="review" key={r.id}>
+            <div className="row-between"><Rating value={r.puntuacion} /><Badge tone={r.estadoModeracion === "APROBADA" ? "success" : "warning"}>{enTitulo(r.estadoModeracion)}</Badge></div>
+            <p>{r.comentario}</p><span>{fecha(r.fecha)}</span>
+          </div>
+        ))}</div>
+      : <EmptyState title="Aún no tienes reseñas" text="Completa tu primera contratación para empezar a construir tu reputación." action="Ver solicitudes" onClick={() => setScreen("requests")} />}
+    </Consulta>
+  </AppContent>
+}
+
+function PrestadorProfile({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion, salir } = useSesion()
+  const p = sesion?.perfilPrestador
+  if (!sesion || !p) return null
+  return <AppContent>
+    <PageHeader title="Mi perfil de Prestador" subtitle="Así te ven tus clientes" onBack={() => setScreen("dashboard")} />
+    <div className="profile-summary">
+      <Avatar nombre={sesion.usuario.nombreCompleto} id={p.id} large />
+      <div><h2>{sesion.usuario.nombreCompleto}</h2><p>{p.descripcion}</p>{p.insigniaVerificado && <Verified />}</div>
+    </div>
+    <div className="settings-list">
+      <button onClick={() => setScreen("verification")}><ShieldCheck /><span><strong>Verificación de identidad</strong><small>Estado: {enTitulo(p.estadoVerificacionActual)}</small></span><ChevronRight /></button>
+      <button onClick={() => setScreen("plans")}><Sparkles /><span><strong>Plan actual</strong><small>{p.planActual} · cámbialo para ver cómo varía tu comisión</small></span><ChevronRight /></button>
+      <button onClick={() => setScreen("reviews")}><Star /><span><strong>Reseñas recibidas</strong><small>{p.calificacionPromedio.toFixed(1)} · {p.totalResenas} reseñas</small></span><ChevronRight /></button>
+      <button onClick={() => setScreen("wallet")}><WalletCards /><span><strong>Billetera</strong><small>Comisiones y movimientos</small></span><ChevronRight /></button>
+    </div>
+    <Button variant="secondary" onClick={salir}><LogOut data-icon="inline-start" /> Cerrar sesión</Button>
+  </AppContent>
+}
+
+// ---------------------------------------------------------------------------
+// Administración
+// ---------------------------------------------------------------------------
+
+function AdminDashboard({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const metricas = useDatos(() => api.bffMetricasAdmin(), ["admin"])
+  return <AppContent>
+    <PageHeader title="Panel de administración" subtitle="Datos reales de los nueve contextos" action={<Badge tone="success">En vivo</Badge>} />
+    <Consulta estado={metricas} filas={4}>{datos => {
+      const porEstado = Object.entries(datos.contrataciones?.porEstado ?? {})
+      const maximo = Math.max(1, ...porEstado.map(([, n]) => n))
+      return <>
+        <div className="admin-metric-grid">
+          <div className="admin-metric"><span>Valor completado</span><strong>{pesos(datos.contrataciones?.valorTotalCompletado ?? 0)}</strong><small>{datos.contrataciones?.total ?? 0} contrataciones</small></div>
+          <div className="admin-metric"><span>Comisión generada</span><strong>{pesos(datos.contrataciones?.comisionTotalCompletada ?? 0)}</strong><small>sobre servicios completados</small></div>
+          <div className="admin-metric"><span>Prestadores</span><strong>{datos.totalPrestadores}</strong><small>activos en la plataforma</small></div>
+          <div className="admin-metric"><span>Incidentes abiertos</span><strong>{datos.incidentes?.abiertos ?? 0}</strong><small>de {datos.incidentes?.total ?? 0} reportados</small></div>
+        </div>
+        <section className="admin-chart-card">
+          <div className="section-heading"><div><span className="eyebrow">CONTRATACIONES</span><h2>Distribución por estado</h2></div></div>
+          <div className="bar-chart" aria-label="Contrataciones por estado">
+            {porEstado.map(([estado, n]) => (
+              <div className="bar-column" key={estado}>
+                <div className="bar-track"><i style={{ height: `${(n / maximo) * 100}%` }} /></div>
+                <span>{enTitulo(estado)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+        <div className="admin-columns">
+          <section className="admin-list-card">
+            <div className="section-heading"><h2>Catálogo por categoría</h2></div>
+            {(datos.catalogo?.items ?? []).map((fila, i) => (
+              <div className="ranking-row" key={fila.categoria.id}>
+                <span className="rank">0{i + 1}</span>
+                <div><strong>{fila.categoria.nombre}</strong><div className="rank-bar"><i style={{ width: `${Math.min(100, fila.totalOfertas * 30)}%` }} /></div></div>
+                <b>{fila.totalOfertas}</b>
+              </div>
+            ))}
+          </section>
+          <section className="admin-list-card">
+            <div className="section-heading"><h2>Canal de adquisición</h2></div>
+            {(datos.canalAdquisicion?.items ?? []).map(fila => (
+              <div className="status-row" key={fila.aliado.nombre}>
+                <span className={`status-dot ${fila.tasaActivacion >= 1 ? "success" : fila.tasaActivacion > 0 ? "warning" : "danger"}`} />
+                <span>{fila.aliado.nombre}</span>
+                <strong>{fila.activados}/{fila.totalReferidos}</strong>
+              </div>
+            ))}
+            <div className="status-row"><span className="status-dot warning" /><span>Reseñas en moderación</span><strong>{datos.resenasEnModeracion}</strong></div>
+            <Button variant="secondary" onClick={() => setScreen("notifications")}>Revisar alertas <ArrowRight data-icon="inline-end" /></Button>
+          </section>
+        </div>
+      </>
+    }}</Consulta>
+  </AppContent>
+}
+
+// ---------------------------------------------------------------------------
+// Raíz
+// ---------------------------------------------------------------------------
+
+const PANTALLAS_PUBLICAS: Screen[] = ["map", "landing", "role", "register", "login", "coverage"]
+
+export default function JobbiApp() {
+  const [sesion, setSesion] = useState<Sesion | null>(null)
+  const [role, setRole] = useState<Role>("Demandante")
+  const [screen, setScreen] = useState<Screen>("map")
+  const [seleccion, setSeleccion] = useState<Seleccion>({})
+  const [listo, setListo] = useState(false)
+
+  // Rehidrata la sesión del navegador antes de pintar, para no mostrar el
+  // onboarding un instante a quien ya había entrado.
+  useEffect(() => {
+    const guardada = leerSesionGuardada()
+    if (guardada) {
+      setSesion(guardada)
+      setRole(guardada.rol)
+      setScreen(guardada.rol === "Prestador" ? "dashboard" : "search")
+    }
+    setListo(true)
+  }, [])
+
+  const entrar = (nueva: Sesion) => {
+    guardarSesion(nueva)
+    setSesion(nueva)
+    setRole(nueva.rol)
+    setSeleccion({})
+    // Es aquí donde el rol decide la pantalla: demandante busca, prestador gestiona.
+    setScreen(nueva.rol === "Prestador" ? "dashboard" : "search")
+  }
+
+  const salir = () => {
+    guardarSesion(null)
+    setSesion(null)
+    setSeleccion({})
+    setRole("Demandante")
+    setScreen("landing")
+  }
+
+  // El perfil de prestador vive en la sesión guardada, así que cambiar de plan
+  // tiene que reescribirla: si no, el navegador seguiría mostrando el anterior
+  // hasta el siguiente login.
+  const actualizarPrestador = (perfil: PerfilPrestador) => setSesion(previa => {
+    if (!previa) return previa
+    const nueva = { ...previa, perfilPrestador: perfil }
+    guardarSesion(nueva)
+    return nueva
+  })
+
+  const contexto = useMemo(
+    () => ({
+      sesion,
+      seleccion,
+      seleccionar: (cambios: Seleccion) => setSeleccion(previo => ({ ...previo, ...cambios })),
+      actualizarPrestador,
+      salir,
+    }),
+    [sesion, seleccion],
+  )
+
+  if (!listo) return <div className="jobbi-app onboarding" />
+
+  // Sin sesión solo se puede estar en el onboarding; con sesión, nunca en él.
+  const pantalla: Screen = sesion
+    ? (PANTALLAS_PUBLICAS.includes(screen) ? (role === "Prestador" ? "dashboard" : "search") : screen)
+    : (PANTALLAS_PUBLICAS.includes(screen) ? screen : "landing")
+
+  const contenido = (() => {
+    switch (pantalla) {
+      case "map": return <MapScreen setScreen={setScreen} />
+      case "landing": return <Landing setScreen={setScreen} />
+      case "role": return <RoleScreen setScreen={setScreen} setRole={setRole} />
+      case "register": return <Register role={role} setScreen={setScreen} entrar={entrar} />
+      case "login": return <Login setScreen={setScreen} entrar={entrar} />
+      case "coverage": return <Coverage role={role} setScreen={setScreen} />
+      case "search": return <SearchScreen setScreen={setScreen} />
+      case "results": return <Results setScreen={setScreen} />
+      case "provider": return <ProviderProfile setScreen={setScreen} />
+      case "chat": return <Chat role={role} setScreen={setScreen} />
+      case "tracking": return <Tracking setScreen={setScreen} />
+      case "rating": return <RatingScreen role={role} setScreen={setScreen} />
+      case "incident": return <Incident setScreen={setScreen} />
+      case "notifications": return <Notifications role={role} setScreen={setScreen} />
+      case "profile": return role === "Prestador" ? <PrestadorProfile setScreen={setScreen} /> : <Profile role={role} setScreen={setScreen} />
+      case "dashboard": return <Dashboard setScreen={setScreen} />
+      case "admin": return <AdminDashboard setScreen={setScreen} />
+      case "requests": return <Requests setScreen={setScreen} />
+      case "checkin": return <Checkin setScreen={setScreen} />
+      case "verification": return <Verification setScreen={setScreen} />
+      case "plans": return <Plans setScreen={setScreen} />
+      case "wallet": return <Wallet setScreen={setScreen} />
+      case "reviews": return <Reviews setScreen={setScreen} />
+      default: return <SearchScreen setScreen={setScreen} />
+    }
+  })()
+
+  return <SesionContext.Provider value={contexto}>
+    {PANTALLAS_PUBLICAS.includes(pantalla)
+      ? <div className="jobbi-app onboarding">{contenido}</div>
+      : <div className="jobbi-app"><AppShell role={role} setRole={setRole} screen={pantalla} setScreen={setScreen}>{contenido}</AppShell></div>}
+  </SesionContext.Provider>
+}

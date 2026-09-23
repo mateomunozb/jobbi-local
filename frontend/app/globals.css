@@ -38,3 +38,89 @@ fieldset{border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
 .detail-card{display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;background:#fff;border:1px solid var(--line);border-radius:18px;padding:30px 22px}.detail-icon{width:58px;height:58px;border-radius:18px;display:grid;place-items:center;background:var(--brand-soft);color:var(--brand)}.detail-icon svg{width:26px;height:26px}.detail-card p{max-width:420px;color:var(--muted);font-size:13px;line-height:1.6}.detail-card .jobbi-button{margin-top:8px}
 .verification-panel{display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;background:#fff;border:1px solid var(--line);border-radius:20px;padding:28px 22px}.verification-panel h2{font-size:24px;line-height:1.15}.verification-panel p{max-width:510px;color:var(--muted);font-size:13px;line-height:1.6}.verification-panel .jobbi-button{width:100%;margin-top:4px}.verification-panel.blocked{background:#fff8eb;border-color:#f2d9a5}.verification-icon{width:64px;height:64px;display:grid;place-items:center;border-radius:20px;background:var(--brand-soft);color:var(--brand)}.verification-icon svg{width:30px;height:30px}.verification-panel.blocked .verification-icon{background:var(--warning-soft);color:var(--warning)}.verification-benefits{width:100%;display:flex;flex-direction:column;gap:9px;text-align:left;margin:4px 0}.verification-benefits span{display:flex;align-items:center;gap:9px;color:var(--foreground);font-size:12px}.verification-benefits svg{width:16px;color:var(--brand);flex:none}.verification-block-note{display:flex;align-items:flex-start;gap:10px;margin-top:16px;padding:14px;border-radius:14px;background:#edf5f4;color:var(--muted);font-size:12px;line-height:1.5}.verification-block-note>svg{width:17px;color:var(--brand);flex:none;margin-top:1px}.verification-block-note p{flex:1}.verification-block-note strong{color:var(--foreground)}.verification-block-note .text-button{padding:0;margin-top:8px;white-space:nowrap}.truora-mock{display:flex;flex-direction:column;align-items:center;gap:15px;text-align:center;background:#fff;border:1px solid var(--line);border-radius:20px;padding:28px 22px}.truora-logo{display:flex;align-items:center;gap:8px;color:#263f80;font-size:20px}.truora-logo svg{width:25px;color:#3e65c5}.truora-mock h2{font-size:25px}.truora-mock>p{max-width:500px;color:var(--muted);font-size:13px;line-height:1.6}.truora-steps{width:100%;display:flex;flex-direction:column;gap:10px;text-align:left;padding:14px;background:#f5f7fb;border-radius:13px}.truora-steps span{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--foreground)}.truora-steps svg{width:16px;color:#3e65c5}.truora-mock .jobbi-button{width:100%;margin-top:3px}.verified-callout{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:16px;padding:14px;border-radius:14px;background:var(--success-soft);color:var(--success);font-size:12px}.verified-callout p{flex:1;color:var(--success);line-height:1.45}.verified-callout .jobbi-button{width:100%;margin-top:4px}
 .profile-verification-cta{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:18px;padding:18px;border:1px solid #b9ded8;border-radius:16px;background:#edf8f5}.profile-verification-cta strong{display:block;color:var(--ink)}.profile-verification-cta p{margin:5px 0 0;color:var(--muted);font-size:13px;line-height:1.4}.profile-verification-cta .jobbi-button{flex:0 0 auto}@media(max-width:600px){.profile-verification-cta{align-items:stretch;flex-direction:column;gap:12px}.profile-verification-cta .jobbi-button{width:100%}}
+
+/* --- Inicio de sesión ---------------------------------------------------- */
+.login-screen { gap:26px; }
+.login-form { display:flex; flex-direction:column; gap:16px; }
+.login-form .jobbi-button { width:100%; }
+.login-form .input-icon svg { width:18px; }
+.login-form input { min-height:52px; }
+.login-form input[aria-invalid="true"] { border-color:var(--danger); background:var(--danger-soft); }
+.login-form .form-error { justify-content:flex-start; text-align:left; background:var(--danger-soft); padding:11px 13px; border-radius:11px; line-height:1.45; }
+.login-demo { border:1px dashed var(--line); border-radius:16px; padding:15px; background:rgba(255,255,255,.6); }
+.login-demo .eyebrow { display:block; margin-bottom:10px; }
+.login-demo-list { display:flex; gap:9px; flex-wrap:wrap; }
+.login-demo-chip { border:1px solid var(--line); background:#fff; border-radius:12px; padding:9px 13px; text-align:left; display:flex; flex-direction:column; gap:2px; color:var(--foreground); transition:.18s ease; }
+.login-demo-chip:hover { border-color:var(--brand); background:var(--brand-soft); transform:translateY(-1px); }
+.login-demo-chip strong { font-size:13px; }
+.login-demo-chip span { font-size:11px; color:var(--muted); font-weight:700; }
+.text-button.inline { padding:0; font-size:12px; }
+
+/* --- Barra de sesión ----------------------------------------------------- */
+.session-bar { display:flex; align-items:center; gap:11px; padding:10px 16px; background:#edf4f3; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+.session-bar .avatar { width:34px; height:34px; font-size:12px; }
+.session-identity { margin-right:auto; min-width:0; }
+.session-identity strong { display:block; font-size:13px; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.session-identity span { display:flex; align-items:center; gap:4px; font-size:11px; color:var(--muted); font-weight:700; }
+.session-identity svg { width:12px; height:12px; color:var(--success); }
+.session-admin { border:1px solid var(--line); background:#fff; color:var(--muted); border-radius:9px; padding:7px 11px; font-size:11px; font-weight:700; flex:none; }
+.session-admin.selected { background:var(--brand); border-color:var(--brand); color:#fff; }
+.session-exit { width:36px; height:36px; border:1px solid var(--line); background:#fff; border-radius:10px; display:grid; place-items:center; color:var(--muted); flex:none; }
+.session-exit:hover { color:var(--danger); border-color:var(--danger); }
+.session-exit svg { width:16px; height:16px; }
+
+/* --- Registro ------------------------------------------------------------ */
+.verification-note { display:flex; gap:11px; align-items:flex-start; background:var(--success-soft); border-radius:13px; padding:13px 15px; color:var(--success); }
+.verification-note svg { width:19px; height:19px; flex:none; margin-top:1px; }
+.verification-note p { font-size:12px; line-height:1.55; }
+.verification-note strong { font-size:13px; }
+
+/* --- Listas conectadas al backend --------------------------------------- */
+.job-card.as-button { width:100%; text-align:left; display:block; color:var(--foreground); }
+.job-card.as-button:hover { border-color:var(--brand); }
+.job-card.as-button .distance { margin-top:10px; color:var(--brand); font-weight:700; }
+.conversation-tabs { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+.conversation-tabs button { border:1px solid var(--line); background:#fff; border-radius:10px; padding:8px 12px; font-size:12px; font-weight:700; color:var(--muted); display:flex; align-items:center; gap:7px; }
+.conversation-tabs button.active { border-color:var(--brand); background:var(--brand-soft); color:var(--brand-dark); }
+.conversation-tabs .unread { background:var(--brand); color:#fff; border-radius:999px; min-width:17px; height:17px; display:grid; place-items:center; font-size:10px; }
+.setting-static { display:flex; align-items:center; gap:13px; padding:15px; border-bottom:1px solid var(--line); color:var(--foreground); }
+.setting-static:last-child { border-bottom:0; }
+.setting-static > svg { width:19px; height:19px; color:var(--brand); flex:none; }
+.setting-static span { display:flex; flex-direction:column; gap:3px; }
+.setting-static strong { font-size:14px; }
+.setting-static small { color:var(--muted); font-size:12px; }
+.notification-item.unread { background:var(--brand-soft); }
+.notification-dot.static { position:static; flex:none; align-self:center; }
+.review-date { color:var(--muted); font-size:11px; font-weight:700; }
+.form-success { display:flex; align-items:center; gap:7px; color:var(--success); font-size:12px; line-height:1.5; background:var(--success-soft); padding:11px 13px; border-radius:11px; }
+.form-success svg { width:15px; flex:none; }
+
+/* --- Chat y estados vacíos conectados ------------------------------------ */
+.chat-vacio { color:var(--muted); font-size:13px; text-align:center; padding:26px 12px; line-height:1.6; }
+.login-demo p { color:var(--muted); font-size:12px; line-height:1.6; margin-bottom:12px; }
+.login-demo .jobbi-button { width:100%; }
+.chat-identity { display:flex; align-items:center; gap:12px; padding:13px 0 17px; border-bottom:1px solid var(--line); margin-bottom:14px; }
+.chat-identity strong { display:block; font-size:14px; }
+.chat-identity span { color:var(--muted); font-size:12px; }
+
+/* --- Acuerdo de tarifa dentro del chat ----------------------------------- */
+/* Es el paso que convierte una conversación en un servicio, así que se
+   despega del hilo de mensajes en vez de parecer uno más. */
+.tarifa-panel { display:flex; flex-direction:column; gap:12px; border:1px solid #cce8e3; background:var(--brand-soft); border-radius:16px; padding:16px; margin-bottom:6px; }
+.tarifa-panel.confirmado { border-color:#bfe3d2; background:var(--success-soft); }
+.tarifa-panel .eyebrow { display:block; margin-bottom:5px; }
+.tarifa-panel > div > strong { font-size:19px; display:block; }
+.tarifa-panel .fine-print { color:var(--muted); font-size:12px; line-height:1.5; margin:0; }
+.tarifa-panel .form-grid { gap:10px; }
+.tarifa-panel input, .tarifa-panel select { background:#fff; }
+.tarifa-panel .jobbi-button { width:100%; }
+.tarifa-panel .form-error { justify-content:flex-start; margin:0; }
+.chat-nota { color:var(--muted); font-size:12px; line-height:1.5; text-align:center; padding:10px 12px; border:1px dashed var(--line); border-radius:12px; margin-bottom:6px; }
+.tarifa-acciones { display:flex; gap:9px; }
+.tarifa-acciones > * { flex:1; min-width:0; }
+@media(max-width:500px){ .tarifa-acciones{ flex-direction:column; } }
+
+/* --- Planes: el cambio de plan escribe, ya no es solo informativo -------- */
+.plan-card .jobbi-button { width:100%; margin-top:16px; font-size:12px; padding-inline:10px; }
+.plan-card.pro .jobbi-button { background:#fff; color:var(--brand-dark); border-color:#fff; }
+.plan-card.pro .jobbi-secondary { background:transparent; color:#fff; border-color:rgba(255,255,255,.55); }

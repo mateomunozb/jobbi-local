@@ -1,8 +1,15 @@
+# Contexto Monetización.
+#
+# Vive en su propio manifiesto porque, además de los endpoints de consulta, es
+# el consumidor del evento CONTRATACION_COMPLETADA (SNS -> SQS en LocalStack).
+# Conserva el nombre de Service `servicio-monetizacion` y el puerto 8000 para
+# que los port-forwards y la prueba de carga k6 existentes sigan siendo válidos.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: servicio-monetizacion
   namespace: aws-local
+  labels: { app: servicio-monetizacion, contexto: monetizacion }
 spec:
   replicas: 1
   selector:
@@ -10,20 +17,33 @@ spec:
       app: servicio-monetizacion
   template:
     metadata:
-      labels:
-        app: servicio-monetizacion
+      labels: { app: servicio-monetizacion, contexto: monetizacion }
     spec:
       containers:
       - name: monetizacion
-        image: jobbi/servicio-monetizacion:v1
+        image: jobbi/backend:v1
         imagePullPolicy: Never
         ports:
         - containerPort: 8000
         env:
+        - { name: SERVICE_MODULE, value: "monetizacion" }
+        - { name: PORT, value: "8000" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: monetizacion }
         - name: AWS_ENDPOINT_URL
           value: "http://localstack.aws-local.svc.cluster.local:4566"
-        - name: QUEUE_URL
-          value: "http://localstack.aws-local.svc.cluster.local:4566/000000000000/monetizacion-events-queue"
+        - { name: AWS_REGION, value: "us-east-1" }
+        - { name: QUEUE_NAME, value: "monetizacion-events-queue" }
+        - { name: SQS_ENABLED, value: "true" }
+        readinessProbe:
+          httpGet: { path: /health, port: 8000 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8000 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
         resources:
           requests:
             cpu: "100m"

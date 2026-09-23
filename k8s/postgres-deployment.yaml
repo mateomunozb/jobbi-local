@@ -1,0 +1,123 @@
+# PostgreSQL: una base de datos por contexto delimitado.
+#
+# Una sola instancia, nueve bases independientes. PostgreSQL no permite
+# consultar entre bases distintas, así que la frontera entre contextos la
+# impone el motor: un JOIN accidental entre Identidad y Contrataciones no es
+# siquiera expresable. En producción cada contexto tendría su propia instancia;
+# aquí comparten proceso para caber en Minikube sin cambiar el modelo.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credenciales
+  namespace: aws-local
+type: Opaque
+stringData:
+  # Credenciales de desarrollo. En un entorno real irían en un gestor de
+  # secretos (Secrets Manager, Vault) y nunca en el repositorio.
+  POSTGRES_USER: jobbi
+  POSTGRES_PASSWORD: jobbi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: aws-local
+data:
+  # El entrypoint de la imagen ejecuta todo lo que haya en
+  # /docker-entrypoint-initdb.d la primera vez que se inicializa el volumen.
+  crear-bases.sh: |
+    #!/bin/bash
+    set -e
+    for contexto in identidad mercado contrataciones comunicacion confianza \
+                    monetizacion soporte adquisicion proteccion; do
+      echo "Creando base jobbi_${contexto}"
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+        -c "CREATE DATABASE jobbi_${contexto} OWNER ${POSTGRES_USER};"
+    done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: aws-local
+spec:
+  # Headless: el StatefulSet da a su Pod un nombre DNS estable.
+  clusterIP: None
+  selector: { app: postgres }
+  ports: [{ name: postgres, port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: aws-local
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        ports: [{ containerPort: 5432, name: postgres }]
+        envFrom:
+        - secretRef: { name: postgres-credenciales }
+        env:
+        - { name: POSTGRES_DB, value: "jobbi" }
+        # El volumen se monta en /var/lib/postgresql/data, que ya contiene
+        # metadatos del propio montaje; PGDATA apunta a un subdirectorio.
+        - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+        volumeMounts:
+        - { name: datos, mountPath: /var/lib/postgresql/data }
+        - { name: init, mountPath: /docker-entrypoint-initdb.d }
+        readinessProbe:
+          exec:
+            command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "100m", memory: "256Mi" }
+          limits: { cpu: "700m", memory: "640Mi" }
+      volumes:
+      - name: init
+        configMap:
+          name: postgres-init
+          defaultMode: 0755
+  volumeClaimTemplates:
+  - metadata:
+      name: datos
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-urls
+  namespace: aws-local
+type: Opaque
+stringData:
+  # Una cadena de conexión por contexto. Cada Deployment monta únicamente la
+  # suya, así que ningún servicio tiene credenciales para la base de otro.
+  identidad: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_identidad
+  mercado: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_mercado
+  contrataciones: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_contrataciones
+  comunicacion: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_comunicacion
+  confianza: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_confianza
+  monetizacion: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_monetizacion
+  soporte: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_soporte
+  adquisicion: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_adquisicion
+  proteccion: postgresql+psycopg://jobbi:jobbi@postgres.aws-local.svc.cluster.local:5432/jobbi_proteccion

@@ -1,0 +1,13 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+# 2.12.x publica ruedas para Python 3.9-3.14, así que el mismo pin sirve tanto
+# dentro de la imagen (3.11) como en el intérprete que traiga cada máquina.
+pydantic==2.12.3
+httpx==0.28.1
+# Valida el formato de correo en el registro (pydantic.EmailStr).
+email-validator==2.2.0
+# Persistencia: SQLAlchemy 2.0 con el driver psycopg 3 para PostgreSQL.
+# SQLite viene en la librería estándar y sirve de alternativa local.
+SQLAlchemy==2.0.54
+psycopg[binary]==3.2.10
+boto3==1.35.90
