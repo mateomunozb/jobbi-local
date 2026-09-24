@@ -283,3 +283,49 @@ Si deseas borrar por completo el clúster de Minikube (por ejemplo, para volver 
 ```powershell
 minikube delete
 ```
+
+## Pasos para instalar el tablero de metricas 
+
+### CONFIGURAR Y ACTUALIZAR REPOSITORIOS DE HELM
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+### PASO 4: INSTALAR EL STACK LIVIANO (PROMETHEUS + GRAFANA)
+helm install prometheus prometheus-community/prometheus --namespace monitoring --set alertmanager.enabled=false --set pushgateway.enabled=false --set server.resources.requests.memory=256Mi --set server.resources.requests.cpu=100m
+
+helm install grafana grafana/grafana --namespace monitoring --set resources.requests.memory=256Mi --set resources.requests.cpu=100m
+
+### PASO 5: VERIFICAR QUE LOS PODS ESTÉN EN EJECUCIÓN
+kubectl get pods -n monitoring
+
+### PASO 6: OBTENER LA CONTRASEÑA DE ADMIN EN POWERSHELL
+$encoded = kubectl get secret --namespace monitoring grafana -o jsonpath="{.data.admin-password}"
+[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encoded))
+
+### PASO 7: ABRIR EL TÚNEL DE ACCESO A GRAFANA
+kubectl port-forward svc/grafana 3000:80 -n monitoring
+
+### PASO 8: CONECTAR PROMETHEUS EN GRAFANA (HTTP://LOCALHOST:3000)
+
+Iniciar sesión con usuario "admin" y la contraseña obtenida en el Paso 6.
+
+Ir a Connections -> Data Sources -> Add data source.
+
+Seleccionar Prometheus.
+
+En el campo URL ingresar: http://prometheus-server.monitoring.svc.cluster.local:80
+
+Guardar cambios haciendo clic en Save & test.
+
+PASO 9: IMPORTAR DASHBOARD PRECONSTRUIDO
+
+Ir al menú Dashboards -> New -> Import.
+
+Ingresar el ID 315 (o 6417) en el campo "Import via panel json.grafana.com".
+
+Hacer clic en Load.
+
+Seleccionar la fuente de datos "Prometheus" configurada previamente.
+
+Hacer clic en Import.
