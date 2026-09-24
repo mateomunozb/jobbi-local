@@ -143,18 +143,14 @@ class AltaResena(BaseModel):
 @app.post("/resenas", tags=["reseñas"], status_code=201,
           summary="Publicar la reseña de una contratación terminada")
 def alta_resena(peticion: AltaResena, s: Session = Depends(sesion)):
-    # Una reseña por autor y contratación: calificar de nuevo corrige la que ya
-    # escribió, no añade una segunda voz del mismo participante.
+    # Una reseña por autor y contratación, y es definitiva: calificar es lo que
+    # cierra el servicio para esa persona, así que no se puede volver a hacer.
     existente = s.scalars(select(ResenaFila).where(
         ResenaFila.contratacionId == peticion.contratacionId,
         ResenaFila.autorId == peticion.autorId,
     )).first()
     if existente:
-        existente.puntuacion = peticion.puntuacion
-        existente.comentario = peticion.comentario.strip()
-        existente.fecha = date.today()
-        s.commit()
-        return Resena.model_validate(existente)
+        raise HTTPException(409, "Ya calificaste este servicio: la reseña no se puede cambiar")
 
     resena = ResenaFila(
         id=nuevo_id(),

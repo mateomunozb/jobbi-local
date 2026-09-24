@@ -1,11 +1,12 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, ArrowRight, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, CircleAlert, Clock3, CreditCard, Home, Loader2, LockKeyhole, LogOut, Mail, MapPin, MessageCircle, MoreHorizontal, RefreshCw, Search, Send, ShieldCheck, Sparkles, Star, UserRound, WalletCards } from "lucide-react"
 import { navAdmin, navDemandante, navPrestador, navigationTree, type Role, type Screen } from "./data"
-import { ApiError, CATEGORIAS_SUGERIDAS, MUNICIPIOS, api, iniciales, pesos, type Categoria, type Contratacion, type ConversacionEnBandeja, type Mensaje, type PerfilPrestador, type Resena, type Sesion } from "@/lib/api"
+import { ApiError, CATEGORIAS_SUGERIDAS, MUNICIPIOS, api, iniciales, pesos, type Categoria, type Cola, type Contratacion, type ConversacionEnBandeja, type EtapaCobro, type Latencias, type Mensaje, type Notificacion, type PerfilPrestador, type Resena, type Sesion } from "@/lib/api"
 import { SesionContext, guardarSesion, leerSesionGuardada, perfilIdDe, useSesion, type Seleccion } from "./session"
-import { useDatos, type EstadoCarga } from "./use-data"
+import { useChatEnVivo } from "./use-chat"
+import { EN_VIVO_MS, useDatos, type EstadoCarga } from "./use-data"
 
 const iconFor = (label: string) => ({ Buscar: Search, Mensajes: MessageCircle, Contrataciones: BriefcaseBusiness, Notificaciones: Bell, Perfil: UserRound, Dashboard: Home, Métricas: Home, Alertas: Bell, Solicitudes: BriefcaseBusiness, Billetera: WalletCards }[label] || MoreHorizontal)
 
@@ -96,8 +97,76 @@ function SessionBar({ role, setRole, setScreen }: { role: Role; setRole: (r: Rol
   </div>
 }
 
+// A qué pantalla lleva cada aviso, según quién lo recibe.
+const DESTINO_AVISO: Record<string, { Prestador: Screen; Demandante: Screen }> = {
+  NUEVO_CONTACTO: { Prestador: "requests", Demandante: "chat" },
+  TARIFA_PROPUESTA: { Prestador: "requests", Demandante: "chat" },
+  SERVICIO_CONFIRMADO: { Prestador: "requests", Demandante: "tracking" },
+  SERVICIO_INICIADO: { Prestador: "requests", Demandante: "tracking" },
+  SERVICIO_COMPLETADO: { Prestador: "requests", Demandante: "tracking" },
+  COMISION_APLICADA: { Prestador: "wallet", Demandante: "tracking" },
+  SERVICIO_CERRADO: { Prestador: "requests", Demandante: "tracking" },
+  PLAN_ACTUALIZADO: { Prestador: "plans", Demandante: "profile" },
+}
+
+/**
+ * Avisos en vivo, en cualquier pantalla. Las notificaciones ya las escribe el
+ * gateway en cada paso del flujo (contacto, tarifa, check-in, cierre, cobro…);
+ * aquí se sondean y las que llegan después de entrar se muestran como tarjeta
+ * emergente. Las que ya existían al abrir la app no se anuncian.
+ */
+function AvisosEnVivo({ setScreen }: { setScreen: (s: Screen) => void }) {
+  const { sesion } = useSesion()
+  const usuarioId = sesion?.usuario.id
+  const lista = useDatos(() => api.notificaciones(usuarioId!), [usuarioId], { cadaMs: EN_VIVO_MS })
+  const vistos = useRef<Set<string> | null>(null)
+  // Uno a la vez: si llegan varios seguidos se muestra el último y cuántos más
+  // hubo, para no tapar la pantalla con una pila de tarjetas.
+  const [aviso, setAviso] = useState<{ ultimo: Notificacion; otros: number } | null>(null)
+
+  useEffect(() => {
+    const items = lista.datos?.items
+    if (!items) return
+    if (vistos.current === null) {
+      vistos.current = new Set(items.map(n => n.id))
+      return
+    }
+    const nuevos = items.filter(n => !vistos.current!.has(n.id))
+    if (!nuevos.length) return
+    nuevos.forEach(n => vistos.current!.add(n.id))
+    setAviso(previo => ({ ultimo: nuevos[0], otros: (previo ? previo.otros + 1 : 0) + nuevos.length - 1 }))
+  }, [lista.datos])
+
+  useEffect(() => {
+    if (!aviso) return
+    const id = setTimeout(() => setAviso(null), 6000)
+    return () => clearTimeout(id)
+  }, [aviso])
+
+  if (!aviso || !sesion) return null
+  const { ultimo, otros } = aviso
+  return <div className="avisos-en-vivo" role="status" aria-live="polite">
+    <button className="aviso" onClick={() => {
+      setAviso(null)
+      setScreen(otros > 0 ? "notifications" : DESTINO_AVISO[ultimo.tipo]?.[sesion.rol as "Prestador" | "Demandante"] ?? "notifications")
+    }}>
+      <Bell /><div>
+        <strong>{enTitulo(ultimo.tipo)}</strong><p>{ultimo.contenido}</p>
+        {otros > 0 && <small className="aviso-mas">y {otros} aviso{otros > 1 ? "s" : ""} más · toca para verlos</small>}
+      </div>
+    </button>
+  </div>
+}
+
 function AppShell({ children, role, setRole, screen, setScreen }: { children: React.ReactNode; role: Role; setRole: (r: Role) => void; screen: Screen; setScreen: (s: Screen) => void }) {
-  return <div className="app-frame"><SessionBar role={role} setRole={setRole} setScreen={setScreen} />{children}<BottomNav role={role} screen={screen} setScreen={setScreen} /></div>
+  const { sesion } = useSesion()
+  return <div className="app-frame">
+    <SessionBar role={role} setRole={setRole} setScreen={setScreen} />
+    {/* key: al cambiar de cuenta, los avisos empiezan de cero. */}
+    {sesion && <AvisosEnVivo key={sesion.usuario.id} setScreen={setScreen} />}
+    {children}
+    <BottomNav role={role} screen={screen} setScreen={setScreen} />
+  </div>
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +464,7 @@ function ProviderProfile({ setScreen }: { setScreen: (s: Screen) => void }) {
  * cuando aceptan ambas se crea la contratación y, con ella, la comisión queda
  * congelada al plan que el prestador tenga en ese instante.
  */
-function PanelTarifa({ hilo, onCambio, setScreen }: { hilo: ConversacionEnBandeja; onCambio: () => void; setScreen: (s: Screen) => void }) {
+function PanelTarifa({ hilo, cerrada, onCambio, setScreen }: { hilo: ConversacionEnBandeja; cerrada: boolean; onCambio: () => void; setScreen: (s: Screen) => void }) {
   const { sesion, seleccionar } = useSesion()
   const esDemandante = sesion?.rol === "Demandante"
   const rol = esDemandante ? "DEMANDANTE" : "PRESTADOR"
@@ -434,21 +503,48 @@ function PanelTarifa({ hilo, onCambio, setScreen }: { hilo: ConversacionEnBandej
     propuestoPor: rol,
   }))
 
-  // El servicio ya existe: el panel deja de negociar y pasa a ser el acceso a él.
-  if (acuerdo?.estado === "ACEPTADO" && hilo.contratacion) {
+  // Chat cerrado: el servicio ya terminó y se calificó. Solo queda el resumen.
+  if (cerrada) {
     const c = hilo.contratacion
     return <div className="tarifa-panel confirmado">
       <div className="row-between">
-        <div><span className="eyebrow">SERVICIO CONFIRMADO</span><strong>{pesos(c.valorAcordado)}</strong></div>
+        <div><span className="eyebrow">SERVICIO CERRADO</span><strong>{c ? pesos(c.valorAcordado) : "Sin servicio"}</strong></div>
+        <Badge tone="neutral"><LockKeyhole /> Solo lectura</Badge>
+      </div>
+      <p className="fine-print">
+        {c ? `${enTitulo(c.medioPago)} · comisión ${pesos(c.montoComision)}` : "Este chat terminó sin acordar un servicio"}
+        {hilo.fechaCierre && <> · cerrado el {fecha(hilo.fechaCierre)}</>}
+      </p>
+      {c && <Button variant="secondary" onClick={() => { seleccionar({ contratacionId: c.id }); setScreen(esDemandante ? "tracking" : "checkin") }}>
+        Ver el servicio <ArrowRight data-icon="inline-end" />
+      </Button>}
+    </div>
+  }
+
+  // El servicio ya existe: el panel deja de negociar y pasa a ser el acceso a él.
+  // Cuando el demandante lo califica queda cerrado, y con él este chat.
+  if (acuerdo?.estado === "ACEPTADO" && hilo.contratacion) {
+    const c = hilo.contratacion
+    const terminado = hilo.ciclo?.terminada ?? false
+    const abrir = (pantalla: Screen) => { seleccionar({ contratacionId: c.id }); setScreen(pantalla) }
+    return <div className="tarifa-panel confirmado">
+      <div className="row-between">
+        <div><span className="eyebrow">{terminado ? "SERVICIO TERMINADO" : "SERVICIO CONFIRMADO"}</span><strong>{pesos(c.valorAcordado)}</strong></div>
         <Badge tone={tonoEstado(c.estado)}>{enTitulo(c.estado)}</Badge>
       </div>
       <p className="fine-print">
-        {enTitulo(c.medioPago)} · comisión {pesos(c.montoComision)} ({Math.round(c.porcentajeComisionAplicado * 100)}%)
-        {acuerdo.planPrestadorAlAcordar && <> · congelada con el plan {acuerdo.planPrestadorAlAcordar} del día del acuerdo</>}
+        {terminado
+          ? esDemandante
+            ? "Califica el servicio para cerrarlo. Este chat quedará cerrado; para contratar de nuevo abrirás uno nuevo."
+            : "El servicio se cierra cuando tu cliente lo califique, y con él este chat."
+          : <>{enTitulo(c.medioPago)} · comisión {pesos(c.montoComision)} ({Math.round(c.porcentajeComisionAplicado * 100)}%)
+              {acuerdo.planPrestadorAlAcordar && <> · congelada con el plan {acuerdo.planPrestadorAlAcordar} del día del acuerdo</>}</>}
       </p>
-      <Button variant="secondary" onClick={() => { seleccionar({ contratacionId: c.id }); setScreen(esDemandante ? "tracking" : "checkin") }}>
-        {esDemandante ? "Ver el estado del servicio" : "Gestionar check-in / check-out"} <ArrowRight data-icon="inline-end" />
-      </Button>
+      {terminado && esDemandante && hilo.ciclo?.puedeCalificar.DEMANDANTE
+        ? <Button onClick={() => abrir("rating")}>Calificar y cerrar el servicio <Star data-icon="inline-end" /></Button>
+        : <Button variant="secondary" onClick={() => abrir(esDemandante ? "tracking" : "checkin")}>
+            {esDemandante ? "Ver el estado del servicio" : terminado ? "Ver el servicio" : "Gestionar check-in / check-out"} <ArrowRight data-icon="inline-end" />
+          </Button>}
     </div>
   }
 
@@ -510,44 +606,65 @@ function Chat({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void 
   const { sesion, seleccion, seleccionar } = useSesion()
   const perfilId = perfilIdDe(sesion)
   const esDemandante = sesion?.rol === "Demandante"
-  // La bandeja la compone el gateway: contactos de Mercado + conversaciones de
-  // Comunicación + el nombre de la otra parte desde Identidad. Pedirla por
-  // contacto (y no por quién ha escrito) hace visible un chat recién abierto.
+  // La bandeja (qué chats hay, su acuerdo y su estado) se refresca por sondeo;
+  // los mensajes del chat abierto llegan por WebSocket.
   const bandeja = useDatos(
     () => api.bandeja(esDemandante ? { demandanteId: perfilId } : { prestadorId: perfilId }),
     [perfilId, esDemandante],
+    { cadaMs: EN_VIVO_MS },
   )
 
   const hilos = bandeja.datos?.items ?? []
-  const activa = hilos.find(h => h.id === seleccion.conversacionId) ?? hilos[0]
-  const mensajes = useDatos(() => api.mensajes(activa!.id), [activa?.id])
+  const abiertos = hilos.filter(h => h.estado !== "CERRADA")
+  const cerrados = hilos.filter(h => h.estado === "CERRADA")
+  const activa = hilos.find(h => h.id === seleccion.conversacionId) ?? abiertos[0] ?? hilos[0]
+  const chat = useChatEnVivo(activa?.id, sesion?.usuario.id, { alCerrarse: bandeja.recargar })
+  const cerrada = activa?.estado === "CERRADA" || chat.cerrada
 
   // Acordar una tarifa antes de haber hablado no tiene sentido: la propuesta
-  // aparece cuando las dos partes ya escribieron. Como en un hilo solo hay dos
-  // participantes, basta con que haya dos remitentes distintos. Un acuerdo que
-  // ya existe se sigue mostrando: para haber nacido, ya conversaron.
-  const remitentes = new Set((mensajes.datos?.items ?? []).map(m => m.remitenteId))
-  const conversacionIniciada = remitentes.size >= 2 || Boolean(activa?.acuerdo)
+  // aparece cuando las dos partes ya escribieron. Un acuerdo que ya existe se
+  // sigue mostrando: para haber nacido, ya conversaron.
+  const remitentes = new Set(chat.mensajes.map(m => m.remitenteId))
+  const conversacionIniciada = remitentes.size >= 2 || Boolean(activa?.acuerdo) || cerrada
 
   const [texto, setTexto] = useState("")
   const [enviando, setEnviando] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [abriendo, setAbriendo] = useState(false)
+  const final = useRef<HTMLDivElement>(null)
+
+  // Cada mensaje nuevo (propio o de la otra parte) lleva la vista al final.
+  useEffect(() => { final.current?.scrollIntoView({ block: "end" }) }, [chat.mensajes.length, chat.otroEscribiendo])
 
   const enviar = async () => {
     const contenido = texto.trim()
-    if (!contenido || !activa || !sesion) return
-    setEnviando(true); setError(null)
+    if (!contenido || !activa || cerrada) return
+    setEnviando(true)
     try {
-      await api.enviarMensaje(activa.id, sesion.usuario.id, contenido)
+      await chat.enviar(contenido)
       setTexto("")
-      mensajes.recargar()
-      bandeja.recargar()
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No pudimos enviar el mensaje.")
+    } catch {
+      // El hook ya dejó el error a la vista.
     } finally {
       setEnviando(false)
     }
   }
+
+  // Solo el demandante contacta: al hacerlo sobre un chat cerrado se abre otro.
+  const iniciarNuevo = async () => {
+    if (!activa) return
+    setAbriendo(true)
+    try {
+      const { conversacion } = await api.contactar(activa.contacto.demandanteId, activa.contacto.prestadorId)
+      seleccionar({ conversacionId: conversacion.id })
+      bandeja.recargar()
+    } finally {
+      setAbriendo(false)
+    }
+  }
+
+  const estadoConexion = cerrada ? "Chat cerrado"
+    : chat.conexion === "conectado" ? (chat.enLinea > 1 ? "En línea" : "Desconectado")
+    : chat.conexion === "reconectando" ? "Reconectando…" : chat.conexion === "sin-conexion" ? "Sin conexión" : "Conectando…"
 
   return <AppContent>
     <PageHeader title="Mensajes" subtitle={activa ? `Con ${activa.otraParteNombre}` : "Tus conversaciones"}
@@ -562,41 +679,69 @@ function Chat({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void 
         onClick={esDemandante ? () => setScreen("search") : undefined} />
 
       return <>
-        {hilos.length > 1 && <div className="conversation-tabs">{hilos.map(h => (
+        {abiertos.length > 1 && <div className="conversation-tabs">{abiertos.map(h => (
           <button key={h.id} className={h.id === activa?.id ? "active" : ""}
             onClick={() => seleccionar({ conversacionId: h.id })}>
-            {h.otraParteNombre}{h.noLeidos > 0 && <span className="unread">{h.noLeidos}</span>}
+            {h.otraParteNombre}
           </button>
         ))}</div>}
+        {cerrados.length > 0 && <div className="conversation-tabs anteriores">
+          <span>Chats anteriores</span>
+          {abiertos.length === 1 && <button className={abiertos[0].id === activa?.id ? "active" : ""}
+            onClick={() => seleccionar({ conversacionId: abiertos[0].id })}>Actual · {abiertos[0].otraParteNombre}</button>}
+          {cerrados.map(h => (
+            <button key={h.id} className={h.id === activa?.id ? "active" : ""}
+              onClick={() => seleccionar({ conversacionId: h.id })}>
+              {h.otraParteNombre} · {fecha(h.fechaCierre ?? h.fechaInicio)}
+            </button>
+          ))}
+        </div>}
 
         {activa && <div className="chat-identity">
           <Avatar nombre={activa.otraParteNombre} id={activa.otraParteId} />
-          <div><strong>{activa.otraParteNombre}</strong><span>{activa.totalMensajes} mensaje(s)</span></div>
+          <div><strong>{activa.otraParteNombre}</strong>
+            <span className={`chat-estado ${!cerrada && chat.conexion === "conectado" && chat.enLinea > 1 ? "en-linea" : ""}`}>{estadoConexion}</span>
+          </div>
         </div>}
 
         {activa && (conversacionIniciada
-          ? <PanelTarifa hilo={activa} onCambio={bandeja.recargar} setScreen={setScreen} />
+          ? <PanelTarifa hilo={activa} cerrada={cerrada} onCambio={bandeja.recargar} setScreen={setScreen} />
           : <p className="chat-nota">Cuando ambos hayan escrito podrán acordar la tarifa del servicio.</p>)}
 
         <div className="chat-body">
-          <Consulta estado={mensajes} filas={2}>{lista => lista.items.length
-            ? <>{lista.items.map((m: Mensaje) => (
-                <div key={m.id} className={`message ${m.remitenteId === sesion!.usuario.id ? "mine" : "theirs"}`}>
-                  <p>{m.contenido}</p><span>{hora(m.fechaEnvio)}</span>
-                </div>
-              ))}</>
-            : <p className="chat-vacio">Todavía no hay mensajes. Escribe el primero.</p>}
-          </Consulta>
+          {chat.cargando && !chat.mensajes.length
+            ? <div className="provider-list"><SkeletonCard /></div>
+            : chat.mensajes.length
+              ? chat.mensajes.map((m: Mensaje) => (
+                  <div key={m.id} className={`message ${m.remitenteId === sesion!.usuario.id ? "mine" : "theirs"}`}>
+                    <p>{m.contenido}</p><span>{hora(m.fechaEnvio)}</span>
+                  </div>
+                ))
+              : <p className="chat-vacio">Todavía no hay mensajes. Escribe el primero.</p>}
+          {chat.otroEscribiendo && !cerrada && <p className="chat-escribiendo">{activa?.otraParteNombre} está escribiendo…</p>}
+          <div ref={final} />
         </div>
 
-        {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
-        <div className="chat-compose">
-          <input value={texto} onChange={e => setTexto(e.target.value)} placeholder="Escribe un mensaje..."
-            onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) enviar() }} />
-          <Button onClick={enviar} disabled={enviando || !texto.trim()}>
-            {enviando ? <Loader2 className="spin" /> : <Send />}
-          </Button>
-        </div>
+        {chat.error && <div className="form-error" role="alert"><CircleAlert /> {chat.error}</div>}
+        {cerrada
+          ? <div className="chat-cerrado">
+              <LockKeyhole />
+              <p><strong>Este chat se cerró al terminar el servicio.</strong><br />
+                {esDemandante
+                  ? `Para volver a contratar a ${activa?.otraParteNombre}, inicia un chat nuevo.`
+                  : "Si el cliente te vuelve a contratar, abrirá un chat nuevo."}</p>
+              {esDemandante && <Button onClick={iniciarNuevo} disabled={abriendo}>
+                {abriendo ? <><Loader2 className="spin" /> Abriendo…</> : <>Iniciar un chat nuevo <MessageCircle data-icon="inline-end" /></>}
+              </Button>}
+            </div>
+          : <div className="chat-compose">
+              <input value={texto} placeholder="Escribe un mensaje..."
+                onChange={e => { setTexto(e.target.value); chat.avisarEscribiendo() }}
+                onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) enviar() }} />
+              <Button onClick={enviar} disabled={enviando || !texto.trim()}>
+                {enviando ? <Loader2 className="spin" /> : <Send />}
+              </Button>
+            </div>}
 
         <div className="chat-cta"><Button variant="secondary" onClick={() => setScreen(role === "Demandante" ? "tracking" : "requests")}>
           {role === "Demandante" ? "Ver mis contrataciones" : "Ver solicitudes"} <ArrowRight data-icon="inline-end" />
@@ -620,8 +765,8 @@ function ContratacionCard({ contratacion, onClick }: { contratacion: Contratacio
 function Tracking({ setScreen }: { setScreen: (s: Screen) => void }) {
   const { sesion, seleccion, seleccionar } = useSesion()
   const perfilId = perfilIdDe(sesion)
-  const lista = useDatos(() => api.contrataciones({ demandanteId: perfilId }), [perfilId])
-  const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId])
+  const lista = useDatos(() => api.contrataciones({ demandanteId: perfilId }), [perfilId], { cadaMs: EN_VIVO_MS })
+  const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId], { cadaMs: EN_VIVO_MS })
 
   if (seleccion.contratacionId) return <AppContent>
     <PageHeader title="Seguimiento" subtitle={`Contratación ${seleccion.contratacionId.slice(-4)}`} onBack={() => seleccionar({ contratacionId: undefined })} />
@@ -646,8 +791,21 @@ function Tracking({ setScreen }: { setScreen: (s: Screen) => void }) {
       </div>}
       {(datos.incidentes?.total ?? 0) > 0 && <div className="alert-box"><CircleAlert /><p><strong>{datos.incidentes!.total} incidente(s) reportado(s).</strong><br />{datos.incidentes!.items[0].evidenciaDescripcion}</p></div>}
       {(datos.resenas?.total ?? 0) > 0 && <section className="detail-section"><div className="section-heading"><h2>Reseñas de esta contratación</h2></div><div className="review-list">{datos.resenas!.items.map(r => <div className="review" key={r.id}><div className="row-between"><Rating value={r.puntuacion} /><span className="review-date">{fecha(r.fecha)}</span></div><p>{r.comentario}</p></div>)}</div></section>}
-      {datos.contratacion.estado === "COMPLETADA" && <Button onClick={() => setScreen("rating")}>Calificar servicio <ArrowRight data-icon="inline-end" /></Button>}
-      <Button variant="danger" onClick={() => setScreen("incident")}>Reportar incidente</Button>
+      {datos.ciclo.cerrada && <div className="alert-box info"><Check /><p>
+        <strong>Servicio cerrado.</strong><br />
+        {datos.contratacion.estado === "CANCELADA"
+          ? "Este servicio se canceló."
+          : "Ya lo calificaste, así que no admite más calificaciones ni reportes."}
+        {" "}Para volver a contratar a {datos.prestador?.nombreCompleto ?? "este prestador"} se abre un chat nuevo.
+      </p></div>}
+      {datos.ciclo.cerrada && <Button onClick={async () => {
+        // Contactar sobre un servicio cerrado abre un chat nuevo para el siguiente.
+        const { conversacion } = await api.contactar(datos.contratacion.demandanteId, datos.contratacion.prestadorId)
+        seleccionar({ conversacionId: conversacion.id })
+        setScreen("chat")
+      }}>Contratar de nuevo <MessageCircle data-icon="inline-end" /></Button>}
+      {datos.ciclo.puedeCalificar.DEMANDANTE && <Button onClick={() => setScreen("rating")}>Calificar y cerrar el servicio <ArrowRight data-icon="inline-end" /></Button>}
+      {datos.ciclo.puedeReportarIncidente && <Button variant="danger" onClick={() => setScreen("incident")}>Reportar incidente</Button>}
     </>}</Consulta>
   </AppContent>
 
@@ -700,13 +858,30 @@ function RatingScreen({ role, setScreen }: { role: Role; setScreen: (s: Screen) 
       action="Ver contrataciones" onClick={() => setScreen(esPrestador ? "requests" : "tracking")} />
   </AppContent>
 
+  const volver = () => setScreen(esPrestador ? "checkin" : "tracking")
+  const rol = esPrestador ? "PRESTADOR" : "DEMANDANTE"
+  const ciclo = detalle.datos?.ciclo
+
+  // Se entra aquí desde botones que ya consultan el ciclo, pero la pantalla no
+  // lo da por hecho: el servicio pudo cerrarse en otra pestaña o dispositivo.
+  if (ciclo && !enviada && !ciclo.puedeCalificar[rol]) return <AppContent>
+    <PageHeader title="Califica tu experiencia" onBack={volver} />
+    <EmptyState
+      title={ciclo.calificadaPor[rol] ? "Ya calificaste este servicio" : "Aún no puedes calificar"}
+      text={ciclo.calificadaPor[rol]
+        ? "Cada servicio se califica una sola vez. Para contratar de nuevo, inicia un chat nuevo."
+        : "La calificación se habilita cuando el servicio termina (después del check-out)."}
+      action="Volver" onClick={volver} />
+  </AppContent>
+
   return <AppContent>
-    <PageHeader title="Califica tu experiencia" subtitle="Contratación completada"
-      onBack={() => setScreen(esPrestador ? "dashboard" : "tracking")} />
+    <PageHeader title="Califica tu experiencia" subtitle="Contratación completada" onBack={volver} />
     {enviada
       ? <div className="success-state"><Check /><h2>Reseña publicada</h2>
-          <p>Ya cuenta para la reputación del perfil, que se recalculó con esta calificación.</p>
-          <Button onClick={() => setScreen(esPrestador ? "dashboard" : "tracking")}>Volver <ArrowRight data-icon="inline-end" /></Button>
+          <p>{esPrestador
+            ? "Gracias por calificar a tu cliente."
+            : "Ya cuenta para la reputación del prestador. El servicio y su chat quedaron cerrados: para volver a contratarlo se abre un chat nuevo."}</p>
+          <Button onClick={volver}>Volver <ArrowRight data-icon="inline-end" /></Button>
         </div>
       : <>
           <div className="rating-card">
@@ -730,6 +905,7 @@ function RatingScreen({ role, setScreen }: { role: Role; setScreen: (s: Screen) 
 
 function Incident({ setScreen }: { setScreen: (s: Screen) => void }) {
   const { seleccion } = useSesion()
+  const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId])
   const [tipo, setTipo] = useState("TRABAJO_INCOMPLETO")
   const [descripcion, setDescripcion] = useState("")
   const [enviando, setEnviando] = useState(false)
@@ -748,6 +924,17 @@ function Incident({ setScreen }: { setScreen: (s: Screen) => void }) {
       setEnviando(false)
     }
   }
+
+  const ciclo = detalle.datos?.ciclo
+  if (ciclo && !enviado && !ciclo.puedeReportarIncidente) return <AppContent>
+    <PageHeader title="Reportar incidente" onBack={() => setScreen("tracking")} />
+    <EmptyState
+      title={ciclo.incidenteReportado ? "Ya reportaste un incidente" : "Este servicio ya está cerrado"}
+      text={ciclo.incidenteReportado
+        ? "El caso sigue abierto en Soporte; puedes ver su estado en el seguimiento de la contratación."
+        : "Los incidentes se reportan durante el servicio o justo al terminarlo, antes de calificarlo."}
+      action="Volver al seguimiento" onClick={() => setScreen("tracking")} />
+  </AppContent>
 
   return <AppContent>
     <PageHeader title="Reportar incidente" onBack={() => setScreen("tracking")} />
@@ -774,7 +961,7 @@ function Incident({ setScreen }: { setScreen: (s: Screen) => void }) {
 
 function Notifications({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) {
   const { sesion } = useSesion()
-  const lista = useDatos(() => api.notificaciones(sesion!.usuario.id), [sesion?.usuario.id])
+  const lista = useDatos(() => api.notificaciones(sesion!.usuario.id), [sesion?.usuario.id], { cadaMs: EN_VIVO_MS })
   return <AppContent>
     <PageHeader title="Notificaciones" subtitle="Mantente al día" onBack={() => setScreen(role === "Demandante" ? "search" : "dashboard")} />
     <Consulta estado={lista} filas={3}>{datos => datos.items.length
@@ -818,8 +1005,10 @@ function Profile({ role, setScreen }: { role: Role; setScreen: (s: Screen) => vo
 function Dashboard({ setScreen }: { setScreen: (s: Screen) => void }) {
   const { sesion, seleccionar } = useSesion()
   const prestadorId = sesion?.perfilPrestador?.id
-  const ficha = useDatos(() => api.bffPrestador(prestadorId!), [prestadorId])
-  const contrataciones = useDatos(() => api.contrataciones({ prestadorId, size: 5 }), [prestadorId])
+  const ficha = useDatos(() => api.bffPrestador(prestadorId!), [prestadorId], { cadaMs: EN_VIVO_MS })
+  const contrataciones = useDatos(() => api.contrataciones({ prestadorId, size: 5 }), [prestadorId], { cadaMs: EN_VIVO_MS })
+  const { solicitudes } = useSolicitudes()
+  const porResponder = solicitudes.filter(s => s.grupo === "responder").length
   const pila = sesion?.usuario.nombreCompleto.split(" ")[0] ?? ""
 
   return <AppContent>
@@ -830,6 +1019,9 @@ function Dashboard({ setScreen }: { setScreen: (s: Screen) => void }) {
         <div><span className="eyebrow">ESTADO DE TU CUENTA</span><h2>Estás listo para trabajar</h2><p><span className="online-dot" /> Disponible para nuevas solicitudes</p></div>
         {datos.perfil.insigniaVerificado && <Verified />}
       </div>
+      {porResponder > 0 && <button className="alert-box solicitudes-aviso" onClick={() => setScreen("requests")}>
+        <Bell /><p><strong>{porResponder === 1 ? "Tienes 1 solicitud" : `Tienes ${porResponder} solicitudes`} esperando tu respuesta.</strong><br />Toca para verlas.</p><ChevronRight />
+      </button>}
       <div className="metric-grid">
         <div><span>Contrataciones</span><strong>{datos.contrataciones?.total ?? 0}</strong><small>{datos.contrataciones?.totalCompletadas ?? 0} completadas</small></div>
         <div><span>Calificación</span><strong>{datos.perfil.calificacionPromedio.toFixed(1)} <Star fill="currentColor" /></strong><small>{datos.perfil.totalResenas} reseñas</small></div>
@@ -849,29 +1041,189 @@ function Dashboard({ setScreen }: { setScreen: (s: Screen) => void }) {
   </AppContent>
 }
 
+type Solicitud = {
+  hilo: ConversacionEnBandeja
+  grupo: "responder" | "curso"
+  titulo: string
+  detalle: string
+  tono: "warning" | "brand" | "success"
+  etiqueta: string
+  accion: "chat" | "checkin"
+  fecha: string
+}
+
+/**
+ * Traduce un chat de la bandeja a lo que el prestador tiene que hacer con él.
+ * Una solicitud es cualquier cosa que viene del cliente antes o durante el
+ * servicio: que abra el chat, que escriba, que proponga una tarifa. Por eso se
+ * arma desde la bandeja y no desde las contrataciones, que solo existen cuando
+ * ya hubo acuerdo.
+ */
+function clasificarSolicitud(hilo: ConversacionEnBandeja, miUsuarioId: string, vuelve: boolean): Solicitud | null {
+  const { acuerdo, contratacion, ciclo, ultimoMensaje } = hilo
+  // Un chat cerrado es historia: su servicio ya terminó y se calificó.
+  if (hilo.estado === "CERRADA") return null
+  const base = { hilo, fecha: acuerdo?.fechaPropuesta ?? ultimoMensaje?.fechaEnvio ?? hilo.fechaInicio }
+
+  if (acuerdo?.estado === "PENDIENTE") {
+    return acuerdo.aceptadoPrestador
+      ? { ...base, grupo: "curso", titulo: `Propusiste ${pesos(acuerdo.valorPropuesto)}`, detalle: "Esperando a que el cliente confirme la tarifa.", tono: "brand", etiqueta: "Esperando al cliente", accion: "chat" }
+      : { ...base, grupo: "responder", titulo: `Te propone ${pesos(acuerdo.valorPropuesto)}`, detalle: `${enTitulo(acuerdo.medioPago)} · confírmala o propón otro valor en el chat.`, tono: "warning", etiqueta: "Confirma la tarifa", accion: "chat" }
+  }
+  if (acuerdo?.estado === "ACEPTADO" && contratacion) {
+    if (ciclo?.terminada) return { ...base, grupo: "curso", titulo: `Servicio terminado · ${pesos(contratacion.valorAcordado)}`, detalle: "Se cierra cuando el cliente lo califique.", tono: "success", etiqueta: "Por calificar", accion: "checkin" }
+    return { ...base, grupo: contratacion.checkIn ? "curso" : "responder", titulo: `Servicio confirmado · ${pesos(contratacion.valorAcordado)}`, detalle: contratacion.checkIn ? "En curso: haz check-out al terminar." : "Haz check-in cuando llegues donde el cliente.", tono: contratacion.checkIn ? "brand" : "warning", etiqueta: enTitulo(contratacion.estado), accion: "checkin" }
+  }
+  // Sin acuerdo todavía: un chat que empieza. Es solicitud si el cliente lo
+  // abrió o escribió y aún no se le ha respondido.
+  if (!ultimoMensaje) return { ...base, grupo: "responder", titulo: vuelve ? "Vuelve a contratarte" : "Quiere contratarte", detalle: "Abrió un chat contigo. Salúdalo para empezar.", tono: "warning", etiqueta: vuelve ? "Cliente que vuelve" : "Nuevo contacto", accion: "chat" }
+  if (ultimoMensaje.remitenteId !== miUsuarioId) return {
+    ...base, grupo: "responder",
+    titulo: vuelve ? "Vuelve a escribirte" : "Te escribió",
+    detalle: `«${ultimoMensaje.contenido.slice(0, 90)}»`,
+    tono: "warning", etiqueta: vuelve ? "Cliente que vuelve" : "Sin responder", accion: "chat",
+  }
+  return null
+}
+
+function SolicitudCard({ solicitud, onAbrir }: { solicitud: Solicitud; onAbrir: () => void }) {
+  const { hilo } = solicitud
+  return <button className="job-card as-button solicitud-card" onClick={onAbrir}>
+    <div className="row-between">
+      <div className="solicitud-quien"><Avatar nombre={hilo.otraParteNombre} id={hilo.otraParteId} /><div><strong>{hilo.otraParteNombre}</strong><span>{fecha(solicitud.fecha)} · {hora(solicitud.fecha)}</span></div></div>
+      <Badge tone={solicitud.tono}>{solicitud.etiqueta}</Badge>
+    </div>
+    <h3>{solicitud.titulo}</h3>
+    <p>{solicitud.detalle}</p>
+    <span className="distance">{solicitud.accion === "chat" ? "Abrir el chat" : "Gestionar el servicio"} <ChevronRight /></span>
+  </button>
+}
+
+/** Solicitudes del prestador a partir de su bandeja, en vivo. */
+function useSolicitudes() {
+  const { sesion } = useSesion()
+  const prestadorId = sesion?.perfilPrestador?.id
+  const bandeja = useDatos(() => api.bandeja({ prestadorId }), [prestadorId], { cadaMs: EN_VIVO_MS })
+  const hilos = bandeja.datos?.items ?? []
+  // Un cliente "vuelve" si ya tuvo con este prestador un chat que se cerró.
+  const conChatCerrado = new Set(hilos.filter(h => h.estado === "CERRADA").map(h => h.contacto.id))
+  const solicitudes = hilos
+    .map(h => clasificarSolicitud(h, sesion?.usuario.id ?? "", conChatCerrado.has(h.contacto.id)))
+    .filter((s): s is Solicitud => s !== null)
+    .sort((a, b) => b.fecha.localeCompare(a.fecha))
+  return { bandeja, solicitudes }
+}
+
 function Requests({ setScreen }: { setScreen: (s: Screen) => void }) {
   const { sesion, seleccionar } = useSesion()
   const prestadorId = sesion?.perfilPrestador?.id
-  const lista = useDatos(() => api.contrataciones({ prestadorId }), [prestadorId])
+  const { bandeja, solicitudes } = useSolicitudes()
+  const historial = useDatos(() => api.contrataciones({ prestadorId }), [prestadorId], { cadaMs: EN_VIVO_MS })
+  const responder = solicitudes.filter(s => s.grupo === "responder")
+  const enCurso = solicitudes.filter(s => s.grupo === "curso")
+
+  const abrir = (s: Solicitud) => {
+    seleccionar({ conversacionId: s.hilo.id, contratacionId: s.hilo.contratacion?.id })
+    setScreen(s.accion)
+  }
+
   return <AppContent>
-    <PageHeader title="Solicitudes" subtitle="Tus contrataciones y oportunidades" onBack={() => setScreen("dashboard")} />
-    <Consulta estado={lista} filas={3}>{datos => datos.items.length
-      ? <div className="request-list">{datos.items.map(c => <ContratacionCard key={c.id} contratacion={c} onClick={() => { seleccionar({ contratacionId: c.id }); setScreen("checkin") }} />)}</div>
-      : <EmptyState title="Aún no tienes solicitudes" text="Cuando alguien necesite tus oficios, aparecerán aquí." action="Ver mi perfil" onClick={() => setScreen("profile")} />}
-    </Consulta>
+    <PageHeader title="Solicitudes" subtitle="Clientes que te buscan y tus servicios" onBack={() => setScreen("dashboard")}
+      action={<Badge tone="success">En vivo</Badge>} />
+    <Consulta estado={bandeja} filas={2}>{() => <>
+      <section>
+        <div className="section-heading"><h2>Necesitan tu respuesta</h2><span className="fine-print">{responder.length}</span></div>
+        {responder.length
+          ? <div className="request-list">{responder.map(s => <SolicitudCard key={s.hilo.id} solicitud={s} onAbrir={() => abrir(s)} />)}</div>
+          : <p className="fine-print">Nada pendiente. Cuando un cliente te escriba o te proponga una tarifa, aparecerá aquí al instante.</p>}
+      </section>
+      {enCurso.length > 0 && <section>
+        <div className="section-heading"><h2>En curso</h2><span className="fine-print">{enCurso.length}</span></div>
+        <div className="request-list">{enCurso.map(s => <SolicitudCard key={s.hilo.id} solicitud={s} onAbrir={() => abrir(s)} />)}</div>
+      </section>}
+    </>}</Consulta>
+    <section>
+      <div className="section-heading"><h2>Historial de servicios</h2></div>
+      <Consulta estado={historial} filas={2}>{datos => datos.items.length
+        ? <div className="request-list">{datos.items.map(c => <ContratacionCard key={c.id} contratacion={c} onClick={() => { seleccionar({ contratacionId: c.id }); setScreen("checkin") }} />)}</div>
+        : <p className="fine-print">Aún no has cerrado ningún servicio.</p>}
+      </Consulta>
+    </section>
   </AppContent>
+}
+
+const ORDEN_ETAPAS: EtapaCobro[] = ["SIN_EVENTO", "EN_OUTBOX", "PUBLICADO", "COBRADO"]
+const ms = (valor: number | null | undefined) =>
+  valor == null ? "—" : valor < 1000 ? `${Math.round(valor)} ms` : `${(valor / 1000).toFixed(1)} s`
+
+/**
+ * El cobro de la comisión ya no ocurre dentro del check-out: viaja como evento
+ * CONTRATACION_COMPLETADA (outbox de Contrataciones → SNS → cola SQS → worker de
+ * Monetización). Esta tarjeta sondea el avance hasta que la comisión aparece en
+ * la billetera, para que el desacoplamiento se vea en vivo.
+ */
+function SeguimientoCobro({ contratacionId, setScreen }: { contratacionId: string; setScreen: (s: Screen) => void }) {
+  const [sondeando, setSondeando] = useState(true)
+  const estado = useDatos(() => api.estadoCobro(contratacionId), [contratacionId], { cadaMs: sondeando ? 1000 : null })
+  const etapa = estado.datos?.etapa
+  useEffect(() => { if (etapa === "COBRADO") setSondeando(false) }, [etapa])
+
+  if (!estado.datos) return null
+  const { evento, cobro } = estado.datos
+  const alcanzada = (e: EtapaCobro) => ORDEN_ETAPAS.indexOf(estado.datos!.etapa) >= ORDEN_ETAPAS.indexOf(e)
+  const reintentando = evento?.estado === "PENDIENTE" && evento.intentos > 0
+
+  const pasos = [
+    {
+      etapa: "EN_OUTBOX" as const,
+      titulo: "Evento guardado con el cierre",
+      detalle: evento ? `Outbox de Contrataciones · ${hora(evento.fechaCreacion)}` : "Esperando el check-out",
+    },
+    {
+      etapa: "PUBLICADO" as const,
+      titulo: "Publicado en SNS → cola SQS",
+      detalle: evento?.fechaPublicacion
+        ? `contratacion-completada-topic · ${hora(evento.fechaPublicacion)}`
+        : reintentando ? `Broker no disponible, reintento ${evento!.intentos}…` : "El relay lo publicará en instantes",
+    },
+    {
+      etapa: "COBRADO" as const,
+      titulo: "Comisión cargada a tu billetera",
+      detalle: cobro?.movimiento
+        ? `Worker de Monetización · ${pesos(Math.abs(cobro.movimiento.monto))}${cobro.evento?.latenciaMs != null ? ` · ${ms(cobro.evento.latenciaMs)} desde el check-out` : ""}`
+        : "Esperando a que Monetización consuma el evento",
+    },
+  ]
+
+  return <div className="tracking-card">
+    <div className="tracking-head">
+      <div><span className="eyebrow">COBRO POR EVENTOS</span><h2>Comisión del servicio</h2></div>
+      {etapa === "COBRADO" ? <Badge tone="success">Cobrada</Badge> : <Badge tone="warning"><Loader2 className="spin" /> En curso</Badge>}
+    </div>
+    <div className="timeline">{pasos.map((paso, i) => (
+      <div className={`timeline-item ${alcanzada(paso.etapa) ? "done" : ""}`} key={paso.etapa}>
+        <div className="timeline-dot">{alcanzada(paso.etapa) ? <Check /> : <span>{i + 1}</span>}</div>
+        <div><strong>{paso.titulo}</strong><span>{paso.detalle}</span></div>
+      </div>
+    ))}</div>
+    {etapa === "COBRADO" && cobro?.billetera && <p className="fine-print">
+      Saldo pendiente con JOBBI: {pesos(cobro.billetera.saldoPendiente)}. El pago fue en efectivo: lo cobraste tú y nos liquidas la comisión.
+    </p>}
+    {etapa === "COBRADO" && <Button variant="secondary" onClick={() => setScreen("wallet")}>Ver mi billetera <WalletCards data-icon="inline-end" /></Button>}
+  </div>
 }
 
 function Checkin({ setScreen }: { setScreen: (s: Screen) => void }) {
   const { seleccion } = useSesion()
-  const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId])
+  const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId], { cadaMs: EN_VIVO_MS })
   const [marcando, setMarcando] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [cobro, setCobro] = useState<{ monto: number; saldo: number } | null>(null)
 
   // El prestador no ve la línea de etapas del demandante: solo los dos botones
   // que le tocan. Marcar la salida es además lo que dispara el cobro, porque
-  // con pago en efectivo no hay ningún otro momento en que la plataforma cobre.
+  // con pago en efectivo no hay ningún otro momento en que la plataforma cobre;
+  // el cobro en sí llega después, por el evento CONTRATACION_COMPLETADA.
   const marcar = async (accion: "in" | "out") => {
     if (!seleccion.contratacionId) return
     setMarcando(true); setError(null)
@@ -915,6 +1267,8 @@ function Checkin({ setScreen }: { setScreen: (s: Screen) => void }) {
 
         {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
         {cobro && <div className="alert-box info"><WalletCards /><p><strong>Comisión cargada a tu billetera: {pesos(cobro.monto)}.</strong><br />El pago fue en efectivo, así que lo cobras tú y nos liquidas la comisión. Saldo pendiente: {pesos(cobro.saldo)}.</p></div>}
+        {/* Con Pub/Sub el check-out no trae el cobro: se sigue el evento en vivo. */}
+        {c.checkOut && !cobro && c.medioPago === "EFECTIVO" && <SeguimientoCobro contratacionId={c.id} setScreen={setScreen} />}
 
         {!c.checkIn && <Button onClick={() => marcar("in")} disabled={marcando}>
           {marcando ? <><Loader2 className="spin" /> Registrando…</> : <>Hacer check-in <Check data-icon="inline-end" /></>}
@@ -922,9 +1276,13 @@ function Checkin({ setScreen }: { setScreen: (s: Screen) => void }) {
         {c.checkIn && !c.checkOut && <Button onClick={() => marcar("out")} disabled={marcando}>
           {marcando ? <><Loader2 className="spin" /> Cerrando servicio…</> : <>Hacer check-out <Check data-icon="inline-end" /></>}
         </Button>}
-        {c.checkOut && <div className="success-state"><Check /><h2>Servicio completado</h2>
-          <p>Tu cliente ya puede dejarte una reseña, y tú puedes calificarlo a él.</p>
-          <Button variant="secondary" onClick={() => setScreen("rating")}>Calificar al cliente <Star data-icon="inline-end" /></Button>
+        {c.checkOut && <div className="success-state"><Check /><h2>{datos.ciclo.cerrada ? "Servicio cerrado" : "Servicio completado"}</h2>
+          <p>{datos.ciclo.cerrada
+            ? "Tu cliente ya lo calificó y el chat quedó cerrado. Si te vuelve a contratar, abrirá uno nuevo."
+            : "Tu cliente ya puede calificarlo; al hacerlo, el servicio queda cerrado."}</p>
+          {datos.ciclo.puedeCalificar.PRESTADOR
+            ? <Button variant="secondary" onClick={() => setScreen("rating")}>Calificar al cliente <Star data-icon="inline-end" /></Button>
+            : datos.ciclo.calificadaPor.PRESTADOR && <p className="fine-print">Ya calificaste a este cliente.</p>}
         </div>}
 
         <Button variant="secondary" onClick={() => setScreen("chat")}>Contactar al cliente <MessageCircle data-icon="inline-end" /></Button>
@@ -1013,9 +1371,9 @@ function Plans({ setScreen }: { setScreen: (s: Screen) => void }) {
 function Wallet({ setScreen }: { setScreen: (s: Screen) => void }) {
   const { sesion } = useSesion()
   const prestadorId = sesion?.perfilPrestador?.id
-  const resumen = useDatos(() => api.resumenFinanciero(prestadorId!), [prestadorId])
+  const resumen = useDatos(() => api.resumenFinanciero(prestadorId!), [prestadorId], { cadaMs: EN_VIVO_MS })
   const billeteraId = resumen.datos?.billetera?.id
-  const movimientos = useDatos(() => api.movimientos(billeteraId!), [billeteraId])
+  const movimientos = useDatos(() => api.movimientos(billeteraId!), [billeteraId], { cadaMs: EN_VIVO_MS })
 
   return <AppContent>
     <PageHeader title="Billetera" subtitle="Gestiona tus ingresos" onBack={() => setScreen("dashboard")} />
@@ -1092,6 +1450,46 @@ function PrestadorProfile({ setScreen }: { setScreen: (s: Screen) => void }) {
 // Administración
 // ---------------------------------------------------------------------------
 
+/**
+ * Tablero del Pub/Sub: productor (outbox + relay), broker (cola y DLQ) y
+ * consumidor (worker SQS). Se refresca cada 2 s, así que durante una prueba de
+ * carga se ve la cola llenarse y drenarse.
+ */
+function MonitorPubSub() {
+  const estado = useDatos(() => api.estadoPubSub(), ["pubsub"], { cadaMs: 2000 })
+  const cola = (c: Cola | undefined) => c?.error ? "—" : `${c?.visibles ?? 0}`
+
+  return <section className="admin-list-card pubsub-monitor">
+    <div className="section-heading">
+      <div><span className="eyebrow">PUB/SUB · CONTRATACION_COMPLETADA</span><h2>Cobro de comisiones por eventos</h2></div>
+      {estado.datos && (estado.datos.modo === "EVENTOS"
+        ? <Badge tone="success">En vivo</Badge>
+        : <Badge tone="warning">Modo síncrono</Badge>)}
+    </div>
+    <Consulta estado={estado} filas={1}>{({ productor: p, consumidor: c }) => {
+      const colas = c?.colas
+      const dlq = colas?.dlq.visibles ?? 0
+      const latencia = (l: Latencias | undefined) => l?.muestras ? `${ms(l.p95)} p95 · ${ms(l.promedio)} prom.` : "sin datos"
+      return <>
+        <div className="admin-metric-grid">
+          <div className="admin-metric"><span>Outbox pendiente</span><strong>{p?.pendientes ?? "—"}</strong><small>{p?.publicados ?? 0} publicados en SNS</small></div>
+          <div className="admin-metric"><span>Cola SQS</span><strong>{cola(colas?.principal)}</strong><small>{colas?.principal.enVuelo ?? 0} en proceso</small></div>
+          <div className="admin-metric"><span>DLQ</span><strong className={dlq > 0 ? "danger-text" : ""}>{cola(colas?.dlq)}</strong><small>tras 5 intentos fallidos</small></div>
+          <div className="admin-metric"><span>Eventos procesados</span><strong>{c?.cobrosProcesados ?? "—"}</strong><small>{c?.desdeArranque.duplicadosDescartados ?? 0} duplicados descartados</small></div>
+        </div>
+        <div className="status-row"><span className={`status-dot ${p?.relay.activo && !p.relay.ultimoError ? "success" : "danger"}`} /><span>Relay outbox → SNS</span><strong>{!p ? "sin respuesta" : !p.relay.activo ? "apagado" : p.relay.ultimoError ? "reintentando" : "activo"}</strong></div>
+        <div className="status-row"><span className={`status-dot ${c?.conectado ? "success" : "danger"}`} /><span>Worker SQS de Monetización</span><strong>{!c ? "sin respuesta" : !c.workerActivo ? "apagado" : c.conectado ? `conectado · ${c.hilos} hilos` : "esperando la cola"}</strong></div>
+        <div className="status-row"><span className="status-dot success" /><span>Latencia outbox → SNS</span><strong>{latencia(p?.latenciaPublicacionMs)}</strong></div>
+        <div className="status-row"><span className="status-dot success" /><span>Latencia check-out → cobro</span><strong>{latencia(c?.latenciaExtremoAExtremoMs)}</strong></div>
+        {Object.entries(c?.porResultado ?? {}).map(([resultado, n]) => (
+          <div className="status-row" key={resultado}><span className="status-dot warning" /><span>{enTitulo(resultado)}</span><strong>{n}</strong></div>
+        ))}
+        {(p?.relay.ultimoError || c?.ultimoError) && <p className="fine-print">Último error: {p?.relay.ultimoError ?? c?.ultimoError}</p>}
+      </>
+    }}</Consulta>
+  </section>
+}
+
 function AdminDashboard({ setScreen }: { setScreen: (s: Screen) => void }) {
   const metricas = useDatos(() => api.bffMetricasAdmin(), ["admin"])
   return <AppContent>
@@ -1143,6 +1541,7 @@ function AdminDashboard({ setScreen }: { setScreen: (s: Screen) => void }) {
         </div>
       </>
     }}</Consulta>
+    <MonitorPubSub />
   </AppContent>
 }
 

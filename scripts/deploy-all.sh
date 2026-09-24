@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="aws-local"
 
-echo "=== 1/5 · Namespace e infraestructura emulada (LocalStack) ==="
+echo "=== 1/5 · Namespace e infraestructura emulada (LocalStack: SNS + SQS + DLQ) ==="
 kubectl apply -f "$ROOT_DIR/k8s/localstack-deployment.yaml"
 
 echo
@@ -35,6 +35,9 @@ echo "=== 5/5 · Reiniciando para tomar las imágenes nuevas ==="
 DEPLOYS="identidad mercado contrataciones comunicacion confianza soporte adquisicion proteccion servicio-monetizacion api-gateway jobbi-frontend"
 for deploy in $DEPLOYS; do kubectl rollout restart "deployment/$deploy" -n "$NS" >/dev/null; done
 for deploy in $DEPLOYS; do kubectl rollout status "deployment/$deploy" -n "$NS" --timeout=180s | tail -1; done
+# LocalStack no se reinicia (su imagen es pública), pero el cobro de comisiones
+# depende de que haya terminado de crear el tema y la cola.
+kubectl rollout status deployment/localstack -n "$NS" --timeout=180s | tail -1
 
 echo
 kubectl get pods -n "$NS"

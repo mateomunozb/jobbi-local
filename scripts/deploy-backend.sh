@@ -6,8 +6,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="aws-local"
 
 echo "=== Aplicando manifiestos ==="
-# El namespace se crea junto con LocalStack; si aún no existe, lo creamos.
-kubectl get namespace "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
+# LocalStack crea el namespace y aprovisiona SNS/SQS al arrancar: el cobro de
+# comisiones viaja como evento por ahí, así que se despliega junto al backend.
+kubectl apply -f "$ROOT_DIR/k8s/localstack-deployment.yaml"
 
 # PostgreSQL debe existir antes que los servicios: de ahí sale su DATABASE_URL.
 kubectl apply -f "$ROOT_DIR/k8s/postgres-deployment.yaml"
@@ -18,7 +19,7 @@ kubectl apply -f "$ROOT_DIR/k8s/monetizacion-deployment.yaml"
 kubectl apply -f "$ROOT_DIR/k8s/gateway-deployment.yaml"
 
 echo "=== Esperando a que los Deployments estén disponibles ==="
-for deploy in identidad mercado contrataciones comunicacion confianza \
+for deploy in localstack identidad mercado contrataciones comunicacion confianza \
               soporte adquisicion proteccion servicio-monetizacion api-gateway; do
   kubectl rollout status "deployment/$deploy" -n "$NS" --timeout=120s
 done

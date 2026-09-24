@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, String
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.db import Base
@@ -62,3 +62,32 @@ class AcuerdoTarifaFila(Base):
     contratacionId: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     fechaPropuesta: Mapped[datetime] = mapped_column(DateTime, index=True)
     fechaCierre: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class EventoOutboxFila(Base):
+    """Bandeja de salida del patrón Transactional Outbox.
+
+    Un evento se escribe aquí en la **misma transacción** que el cambio de
+    negocio que lo origina (el check-out). Así nunca existe una contratación
+    completada sin su evento, ni un evento de una contratación que no se
+    completó. Publicarlo en SNS es trabajo aparte del relay: si LocalStack está
+    caído, el evento espera aquí en PENDIENTE y sale cuando vuelva.
+    """
+
+    __tablename__ = "outbox_eventos"
+    # Un agregado emite cada tipo de evento una sola vez: dos check-out
+    # simultáneos de la misma contratación no pueden dejar dos eventos.
+    __table_args__ = (UniqueConstraint("tipo", "agregadoId", name="uq_outbox_tipo_agregado"),)
+
+    # Es también el eventoId que viaja en el mensaje: el consumidor lo usa para
+    # descartar duplicados.
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(60), index=True)
+    agregadoId: Mapped[str] = mapped_column(String(36), index=True)
+    payload: Mapped[str] = mapped_column(Text)
+    estado: Mapped[str] = mapped_column(String(20), index=True)  # PENDIENTE | PUBLICADO
+    intentos: Mapped[int] = mapped_column(Integer, default=0)
+    ultimoError: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fechaCreacion: Mapped[datetime] = mapped_column(DateTime, index=True)
+    fechaPublicacion: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    mensajeSnsId: Mapped[str | None] = mapped_column(String(100), nullable=True)

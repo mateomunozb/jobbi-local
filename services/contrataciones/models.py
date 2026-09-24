@@ -41,3 +41,16 @@ class Contratacion(Esquema):
     montoComision: float
     checkIn: datetime | None = None
     checkOut: datetime | None = None
+
+
+class EventoOutbox(Esquema):
+    id: str
+    tipo: str
+    agregadoId: str
+    payload: str
+    estado: str
+    intentos: int
+    ultimoError: str | None = None
+    fechaCreacion: datetime
+    fechaPublicacion: datetime | None = None
+    mensajeSnsId: str | None = None

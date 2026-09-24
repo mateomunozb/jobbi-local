@@ -23,3 +23,6 @@ __v0_jsx-dev-runtime.ts
 .datos/
 __pycache__/
 *.pyc
+
+# Resúmenes de las pruebas de carga k6
+tests/k6/resultados/

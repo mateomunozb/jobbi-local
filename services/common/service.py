@@ -8,6 +8,7 @@ frontend pueda consumirlos a través del gateway.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Callable, Iterable, Sequence, TypeVar
 
@@ -91,3 +92,15 @@ def obtener_o_404(coleccion: Iterable[Any], id_buscado: str, entidad: str) -> An
 
 def puerto_por_defecto(valor: int) -> int:
     return int(os.getenv("PORT", valor))
+
+
+def resumen_latencias(valores_ms: Sequence[float]) -> dict[str, float | int | None]:
+    """Promedio y p95 (rango más cercano) de una muestra de latencias en ms."""
+    ordenados = sorted(valores_ms)
+    if not ordenados:
+        return {"muestras": 0, "promedio": None, "p95": None}
+    return {
+        "muestras": len(ordenados),
+        "promedio": round(sum(ordenados) / len(ordenados), 1),
+        "p95": round(ordenados[math.ceil(len(ordenados) * 0.95) - 1], 1),
+    }

@@ -32,6 +32,14 @@ for contexto in $CONTEXTOS; do
 done
 
 echo
+echo "=== Vaciando las colas SQS (eventos en tránsito de la sesión anterior) ==="
+for cola in monetizacion-events-queue monetizacion-events-dlq; do
+  kubectl exec -n "$NS" deploy/localstack -- \
+    awslocal sqs purge-queue --queue-url "http://localhost:4566/000000000000/$cola" >/dev/null 2>&1 \
+    && echo "  ✓ $cola" || echo "  - $cola (LocalStack no disponible, se omite)"
+done
+
+echo
 echo "=== Reiniciando los servicios para que recreen su esquema ==="
 DEPLOYS="identidad mercado contrataciones comunicacion confianza soporte adquisicion proteccion servicio-monetizacion"
 for deploy in $DEPLOYS; do kubectl rollout restart "deployment/$deploy" -n "$NS" >/dev/null; done

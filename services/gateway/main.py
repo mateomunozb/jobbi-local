@@ -17,10 +17,13 @@ tumbar la respuesta completa.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from typing import Any
 
 import httpx
-from fastapi import HTTPException, Query, Request
+import websockets
+from fastapi import HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse
 
 from common.service import crear_servicio
@@ -37,13 +40,27 @@ app = crear_servicio(
 )
 
 TIMEOUT = httpx.Timeout(10.0, connect=3.0)
+# Cada petición del frontend se abre en varias hacia los servicios (una vista BFF
+# llega a seis en paralelo). Con el límite por defecto de httpx (20 conexiones
+# reutilizables) el resto se abre y se cierra en cada llamada: bajo carga eso
+# satura la cola de aceptación TCP de los servicios y aparecen ConnectError.
+# Reutilizarlas lo evita. La expiración queda por debajo de los 5 s que uvicorn
+# mantiene viva una conexión ociosa, para no reutilizar una que el servidor ya
+# está cerrando.
+LIMITES = httpx.Limits(max_connections=400, max_keepalive_connections=400, keepalive_expiry=4.0)
 _cliente: httpx.AsyncClient | None = None
+
+# Con Pub/Sub (el modo normal) el check-out no cobra: Contrataciones publica
+# CONTRATACION_COMPLETADA y Monetización cobra al consumirlo. Sin LocalStack
+# (backend local sin PUBSUB=1) no hay quien entregue el evento, así que el
+# gateway vuelve al cobro síncrono para que la comisión no se pierda.
+COBRO_VIA_EVENTOS = os.getenv("COBRO_VIA_EVENTOS", "true").lower() in ("1", "true", "yes")
 
 
 @app.on_event("startup")
 async def _abrir_cliente() -> None:
     global _cliente
-    _cliente = httpx.AsyncClient(timeout=TIMEOUT)
+    _cliente = httpx.AsyncClient(timeout=TIMEOUT, limits=LIMITES)
 
 
 @app.on_event("shutdown")
@@ -57,7 +74,8 @@ async def _pedir(servicio: str, ruta: str, params: dict | None = None) -> Any:
     base = SERVICIOS[servicio]["url"]
     try:
         respuesta = await _cliente.get(f"{base}{ruta}", params=params)
-    except httpx.HTTPError:
+    except httpx.HTTPError as e:
+        print(f"[gateway] GET {servicio}{ruta} falló: {type(e).__name__}: {e}", flush=True)
         return None
     if respuesta.status_code >= 400:
         return None
@@ -83,7 +101,8 @@ async def _enviar_json(servicio: str, ruta: str, cuerpo: dict) -> Any:
     base = SERVICIOS[servicio]["url"]
     try:
         respuesta = await _cliente.post(f"{base}{ruta}", json=cuerpo)
-    except httpx.HTTPError:
+    except httpx.HTTPError as e:
+        print(f"[gateway] POST {servicio}{ruta} falló: {type(e).__name__}: {e}", flush=True)
         return None
     if respuesta.status_code >= 400:
         return None
@@ -142,6 +161,59 @@ def catalogo_servicios():
             for nombre, info in SERVICIOS.items()
         ],
     }
+
+
+# --- Ciclo de vida de una contratación --------------------------------------
+# Terminar el trabajo (check-out) no cierra el servicio: queda la calificación y,
+# si algo salió mal, el reporte de incidente. El servicio queda **cerrado** cuando
+# el demandante lo califica; desde ahí no se puede volver a calificar ni reportar,
+# y el chat vuelve a quedar libre para acordar un servicio nuevo.
+#
+# La regla cruza tres contextos (el estado es de Contrataciones, las reseñas de
+# Confianza y los incidentes de Soporte), así que vive aquí, en un solo lugar:
+# las pantallas la leen de `ciclo` y las escrituras la validan antes de pasar.
+
+_TERMINADA = "COMPLETADA"
+# Estados en los que tiene sentido reportar un problema: desde que el servicio
+# se acordó (p. ej. el prestador no llega) hasta que termina.
+_REPORTABLES = {"SOLICITADA", "ACEPTADA", "EN_CURSO", "CHECK_IN", "CHECK_OUT", "COMPLETADA"}
+
+
+def _ciclo_desde(contratacion: dict, resenas: dict | None, incidentes: dict | None) -> dict:
+    """Qué se puede hacer todavía con una contratación. Función pura, sin E/S."""
+    estado = contratacion["estado"]
+    autores = {r["autorId"] for r in (resenas or {}).get("items") or []}
+    calificada = {
+        "DEMANDANTE": contratacion["demandanteId"] in autores,
+        "PRESTADOR": contratacion["prestadorId"] in autores,
+    }
+    terminada = estado == _TERMINADA
+    cerrada = (terminada and calificada["DEMANDANTE"]) or estado == "CANCELADA"
+    reportado = ((incidentes or {}).get("total") or 0) > 0
+    # Si Confianza o Soporte no respondieron no se sabe si ya se hizo: ante la
+    # duda no se ofrece la acción (el servicio dueño la rechazaría igual).
+    return {
+        "terminada": terminada,
+        "cerrada": cerrada,
+        "calificadaPor": calificada,
+        "puedeCalificar": {
+            rol: resenas is not None and terminada and not hecho
+            for rol, hecho in calificada.items()
+        },
+        "incidenteReportado": reportado,
+        "puedeReportarIncidente": (
+            incidentes is not None and resenas is not None
+            and estado in _REPORTABLES and not cerrada and not reportado
+        ),
+    }
+
+
+async def _ciclo(contratacion: dict) -> dict:
+    resenas, incidentes = await asyncio.gather(
+        _pedir("confianza", "/resenas", {"contratacionId": contratacion["id"], "size": 10}),
+        _pedir("soporte", "/incidentes", {"contratacionId": contratacion["id"], "size": 1}),
+    )
+    return _ciclo_desde(contratacion, resenas, incidentes)
 
 
 # --- Composición BFF -------------------------------------------------------
@@ -204,6 +276,7 @@ async def bff_contratacion(contratacion_id: str):
         "resenas": resenas,
         "incidentes": incidentes,
         "proteccion": proteccion,
+        "ciclo": _ciclo_desde(contratacion, resenas, incidentes),
     }
 
 
@@ -341,41 +414,62 @@ async def bff_mensajes(
         for perfil in perfiles if perfil
     }
 
-    # El chat es donde se negocia la tarifa, así que la bandeja trae ya el
-    # acuerdo vigente de cada hilo: sin él la pantalla no sabría si mostrar el
-    # botón de proponer, el de aceptar, o el servicio ya confirmado.
+    # Hay un chat por servicio, y en cada uno se negocia la tarifa de ese
+    # servicio: la bandeja trae el acuerdo de cada chat, sin el cual la pantalla
+    # no sabría si mostrar proponer, aceptar, el servicio en curso o el cierre.
+    chats = (conversaciones or {}).get("items") or []
     acuerdos = await _pedir("contrataciones", "/acuerdos", {
         "contactoIds": ",".join(por_id), "size": 200,
     })
-    vigente_por_contacto: dict[str, dict] = {}
+    # Los acuerdos de antes del chat por servicio no traen conversación: se
+    # atribuyen al chat más antiguo de su contacto, que es donde nacieron.
+    mas_antiguo: dict[str, str] = {}
+    for chat in reversed(chats):
+        mas_antiguo.setdefault(chat["contactoId"], chat["id"])
+    vigente_por_chat: dict[str, dict] = {}
     for acuerdo in (acuerdos or {}).get("items") or []:
-        # Vienen del más reciente al más antiguo: el primero útil de cada
-        # contacto es el que manda.
+        # Vienen del más reciente al más antiguo: el primero útil de cada chat
+        # es el que manda.
         if acuerdo["estado"] not in ("PENDIENTE", "ACEPTADO"):
             continue
-        vigente_por_contacto.setdefault(acuerdo["contactoId"], acuerdo)
+        chat_id = acuerdo.get("conversacionId") or mas_antiguo.get(acuerdo["contactoId"])
+        vigente_por_chat.setdefault(chat_id, acuerdo)
 
     contrataciones = await asyncio.gather(*(
         _pedir("contrataciones", f"/contrataciones/{a['contratacionId']}")
-        for a in vigente_por_contacto.values() if a.get("contratacionId")
+        for a in vigente_por_chat.values() if a.get("contratacionId")
     ))
     por_contratacion = {c["id"]: c for c in contrataciones if c}
+    ciclos = dict(zip(por_contratacion, await asyncio.gather(
+        *(_ciclo(c) for c in por_contratacion.values())
+    )))
 
     items = []
-    for conversacion in (conversaciones or {}).get("items") or []:
-        contacto = por_id.get(conversacion["contactoId"])
+    for chat in chats:
+        contacto = por_id.get(chat["contactoId"])
         if contacto is None:
             continue
         otro = contacto["prestadorId"] if soy_demandante else contacto["demandanteId"]
-        acuerdo = vigente_por_contacto.get(contacto["id"])
+        acuerdo = vigente_por_chat.get(chat["id"])
+        ciclo = ciclos.get((acuerdo or {}).get("contratacionId"))
+        if chat.get("estado", "ABIERTA") == "ABIERTA" and ciclo and ciclo["cerrada"]:
+            # Un chat de antes de este cambio cuyo servicio ya se cerró: se
+            # cierra ahora, igual que se habría cerrado al calificar.
+            cerrado = await _enviar_json("comunicacion", f"/conversaciones/{chat['id']}/cerrar",
+                                         {"contratacionId": acuerdo["contratacionId"]})
+            if cerrado:
+                chat = {**chat, **cerrado}
         items.append({
-            **conversacion,
+            **chat,
             "contacto": contacto,
             "otraParteId": otro,
             "otraParteNombre": nombres.get(otro, "Usuario"),
             "acuerdo": acuerdo,
             "contratacion": por_contratacion.get((acuerdo or {}).get("contratacionId")),
+            "ciclo": ciclo,
         })
+    # Primero los chats abiertos; los cerrados quedan como historial.
+    items.sort(key=lambda item: item.get("estado") == "CERRADA")
     return {"total": len(items), "items": items}
 
 
@@ -410,6 +504,15 @@ async def bff_contactar(cuerpo: dict):
         # de fingir que el chat está listo.
         raise HTTPException(503, "El contexto de Comunicación no pudo abrir la conversación")
 
+    # Es la primera señal de una solicitud (o de un cliente que vuelve): el
+    # prestador se entera en vivo, sin esperar a que le escriban.
+    demandante, (_, usuario_pres) = await asyncio.gather(
+        _pedir("identidad", f"/demandantes/{demandante_id}"),
+        _usuarios_de(demandante_id, prestador_id),
+    )
+    await _avisar(usuario_pres, "NUEVO_CONTACTO",
+                  f"{(demandante or {}).get('nombreCompleto', 'Un cliente')} quiere contratarte. "
+                  "Respóndele en el chat.")
     return {"contacto": contacto, "conversacion": conversacion}
 
 
@@ -472,6 +575,25 @@ async def bff_proponer_acuerdo(cuerpo: dict):
     contacto_id = cuerpo.get("contactoId")
     if not (demandante_id and prestador_id and contacto_id):
         raise HTTPException(422, "Se requieren 'contactoId', 'demandanteId' y 'prestadorId'")
+
+    chat_id = cuerpo.get("conversacionId")
+    if chat_id:
+        chat = await _pedir("comunicacion", f"/conversaciones/{chat_id}")
+        if chat and chat.get("estado") == "CERRADA":
+            raise HTTPException(409, "Este chat se cerró con su servicio: inicia uno nuevo para "
+                                     "acordar otro servicio")
+
+    # Un servicio nuevo solo cuando el anterior con esta persona está cerrado.
+    # Contrataciones ya impide negociar con uno en curso; lo que solo se ve
+    # desde aquí es el que terminó pero aún no se ha calificado.
+    previos = await _pedir("contrataciones", "/acuerdos",
+                           {"contactoId": contacto_id, "estado": "ACEPTADO", "size": 1})
+    ultimo = ((previos or {}).get("items") or [None])[0]
+    if ultimo and ultimo.get("contratacionId"):
+        anterior = await _pedir("contrataciones", f"/contrataciones/{ultimo['contratacionId']}")
+        if anterior and not (await _ciclo(anterior))["cerrada"]:
+            raise HTTPException(409, "El servicio anterior con esta persona sigue abierto: "
+                                     "termínalo y califícalo antes de acordar uno nuevo")
 
     oficio_id = cuerpo.get("oficioId")
     valor = cuerpo.get("valorPropuesto")
@@ -557,15 +679,19 @@ async def bff_check_in(contratacion_id: str, cuerpo: dict | None = None):
 
 
 @app.post("/api/bff/contrataciones/{contratacion_id}/check-out", tags=["bff"],
-          summary="Check-out del prestador: cierra el servicio y cobra la comisión")
+          summary="Check-out del prestador: cierra el servicio y dispara el cobro")
 async def bff_check_out(contratacion_id: str, cuerpo: dict | None = None):
     """El cierre del servicio es también el momento del cobro.
 
-    Con pago en efectivo el dinero no pasa por la plataforma, así que no hay
-    nada que retener: lo que queda es cargarle al prestador la comisión pactada
-    en su billetera. Se usa `montoComision`, que Contrataciones calculó con el
-    porcentaje congelado al cerrar el acuerdo; el plan que tenga hoy no entra
-    en esta cuenta.
+    Con pago en efectivo el dinero no pasa por la plataforma: lo que queda es
+    cargarle al prestador la comisión pactada en su billetera.
+
+    Ese cobro ya **no** lo hace el gateway. Contrataciones guarda el evento
+    CONTRATACION_COMPLETADA junto con el cierre (outbox) y lo publica en SNS;
+    Monetización lo consume de su cola SQS y cobra. Así el check-out responde
+    sin esperar a Monetización, y funciona aunque Monetización esté caída: el
+    cobro llega cuando vuelva. El avance se sigue en
+    `/api/bff/contrataciones/{id}/cobro`.
     """
     contratacion = await _enviar_json(
         "contrataciones", f"/contrataciones/{contratacion_id}/check-out", {})
@@ -573,7 +699,7 @@ async def bff_check_out(contratacion_id: str, cuerpo: dict | None = None):
         raise HTTPException(409, "No se pudo cerrar el servicio: revisa que haya check-in")
 
     cobro = None
-    if contratacion["medioPago"] == "EFECTIVO":
+    if not COBRO_VIA_EVENTOS and contratacion["medioPago"] == "EFECTIVO":
         cobro = await _enviar_json("monetizacion", "/comisiones", {
             "prestadorId": contratacion["prestadorId"],
             "contratacionId": contratacion["id"],
@@ -581,35 +707,147 @@ async def bff_check_out(contratacion_id: str, cuerpo: dict | None = None):
             "medioPago": contratacion["medioPago"],
         })
 
+    monto = f"${round(contratacion['montoComision']):,} COP"
     usuario_dem, usuario_pres = await _usuarios_de(
         contratacion["demandanteId"], contratacion["prestadorId"])
     await asyncio.gather(
         _avisar(usuario_dem, "SERVICIO_COMPLETADO",
                 "El servicio terminó. Cuéntanos cómo te fue dejando tu reseña."),
         _avisar(usuario_pres, "COMISION_APLICADA",
-                f"Servicio cerrado. Comisión de ${round(contratacion['montoComision']):,} COP "
-                f"cargada a tu billetera."),
+                f"Servicio cerrado. La comisión de {monto} se cargará a tu billetera."
+                if COBRO_VIA_EVENTOS else
+                f"Servicio cerrado. Comisión de {monto} cargada a tu billetera."),
     )
-    return {"contratacion": contratacion, "cobro": cobro}
+    return {"contratacion": contratacion, "cobro": cobro, "cobroAsincrono": COBRO_VIA_EVENTOS}
+
+
+@app.get("/api/bff/contrataciones/{contratacion_id}/cobro", tags=["bff"],
+         summary="Seguimiento del cobro asíncrono: outbox → SNS → SQS → billetera")
+async def bff_estado_cobro(contratacion_id: str):
+    """Junta lo que sabe cada lado del Pub/Sub sobre una contratación.
+
+    Contrataciones sabe si el evento se guardó y si ya salió hacia SNS;
+    Monetización sabe si lo consumió y cobró. Ninguno conoce la parte del otro.
+    """
+    outbox, cobro = await asyncio.gather(
+        _pedir("contrataciones", "/outbox", {"agregadoId": contratacion_id, "size": 1}),
+        _pedir("monetizacion", f"/cobros/contratacion/{contratacion_id}"),
+    )
+    evento = ((outbox or {}).get("items") or [None])[0]
+    cobrado = bool((cobro or {}).get("cobrado"))
+    publicado = bool(evento and evento["estado"] == "PUBLICADO")
+
+    if cobrado:
+        etapa = "COBRADO"
+    elif publicado:
+        etapa = "PUBLICADO"  # en SNS/SQS, esperando al worker
+    elif evento:
+        etapa = "EN_OUTBOX"  # guardado, esperando al relay
+    else:
+        etapa = "SIN_EVENTO"
+    return {
+        "contratacionId": contratacion_id,
+        "modo": "EVENTOS" if COBRO_VIA_EVENTOS else "SINCRONO",
+        "etapa": etapa,
+        "evento": evento,
+        "cobro": cobro,
+    }
+
+
+@app.get("/api/bff/pubsub/estado", tags=["bff"],
+         summary="Tablero del Pub/Sub: productor, colas y consumidor")
+async def bff_estado_pubsub():
+    productor, consumidor = await asyncio.gather(
+        _pedir("contrataciones", "/outbox/resumen"),
+        _pedir("monetizacion", "/cobros/estado-worker"),
+    )
+    return {
+        "modo": "EVENTOS" if COBRO_VIA_EVENTOS else "SINCRONO",
+        "productor": productor,
+        "consumidor": consumidor,
+    }
 
 
 @app.post("/api/bff/resenas", tags=["bff"], status_code=201,
           summary="Publicar una reseña y refrescar la reputación del perfil")
 async def bff_resena(cuerpo: dict):
-    resena = await _enviar_json("confianza", "/resenas", cuerpo)
-    if resena is None:
-        raise HTTPException(503, "El contexto de Confianza no pudo registrar la reseña")
+    contratacion = await _pedir("contrataciones", f"/contrataciones/{cuerpo.get('contratacionId')}")
+    if contratacion is None:
+        raise HTTPException(404, "Contratación no encontrada")
+
+    # Quién califica a quién sale de la contratación, no de lo que mande el
+    # cliente: cada parte solo puede calificar a la otra.
+    autor = cuerpo.get("autorId")
+    if autor == contratacion["demandanteId"]:
+        rol, receptor = "DEMANDANTE", contratacion["prestadorId"]
+    elif autor == contratacion["prestadorId"]:
+        rol, receptor = "PRESTADOR", contratacion["demandanteId"]
+    else:
+        raise HTTPException(403, "Solo las partes de la contratación pueden calificarla")
+
+    ciclo = await _ciclo(contratacion)
+    if not ciclo["terminada"]:
+        raise HTTPException(409, "Solo se puede calificar un servicio terminado")
+    if ciclo["calificadaPor"][rol]:
+        raise HTTPException(409, "Ya calificaste este servicio")
+
+    respuesta = await _enviar("confianza", "/resenas", {**cuerpo, "receptorId": receptor})
+    if respuesta.status_code != 201:
+        return respuesta
+    resena = json.loads(respuesta.body)
 
     # El promedio publicado vive en Identidad, pero lo calcula Confianza sobre
     # el detalle que sí es suyo. Se recalcula entero en vez de irlo sumando.
-    receptor = resena["receptorId"]
-    resumen = await _pedir("confianza", "/resenas/resumen", {"receptorId": receptor})
-    perfil = None
-    if resumen:
-        perfil = await _enviar_json("identidad", f"/prestadores/{receptor}/reputacion", {
-            "calificacionPromedio": resumen["promedio"], "totalResenas": resumen["total"],
-        })
+    # Solo los prestadores tienen reputación pública.
+    resumen = perfil = None
+    if rol == "DEMANDANTE":
+        resumen = await _pedir("confianza", "/resenas/resumen", {"receptorId": receptor})
+        if resumen:
+            perfil = await _enviar_json("identidad", f"/prestadores/{receptor}/reputacion", {
+                "calificacionPromedio": resumen["promedio"], "totalResenas": resumen["total"],
+            })
+        await _cerrar_chat_de(contratacion["id"])
+        _, usuario_pres = await _usuarios_de(contratacion["demandanteId"], receptor)
+        await _avisar(usuario_pres, "SERVICIO_CERRADO",
+                      f"Tu cliente calificó el servicio con {resena['puntuacion']} estrella(s). "
+                      "El servicio quedó cerrado.")
     return {"resena": resena, "resumen": resumen, "perfil": perfil}
+
+
+async def _cerrar_chat_de(contratacion_id: str) -> None:
+    """Un servicio cerrado cierra su chat: queda de solo lectura, y quien lo
+    tenga abierto lo ve deshabilitarse en el momento (por WebSocket)."""
+    acuerdos = await _pedir("contrataciones", "/acuerdos", {"contratacionId": contratacion_id, "size": 1})
+    acuerdo = ((acuerdos or {}).get("items") or [None])[0]
+    if not acuerdo:
+        return
+    chat_id = acuerdo.get("conversacionId")
+    if not chat_id:
+        # Acuerdo de antes del chat por servicio: su chat es el abierto del contacto.
+        abiertos = await _pedir("comunicacion", "/conversaciones",
+                                {"contactoId": acuerdo["contactoId"], "estado": "ABIERTA", "size": 1})
+        chat_id = (((abiertos or {}).get("items") or [{}])[0]).get("id")
+    if chat_id:
+        await _enviar_json("comunicacion", f"/conversaciones/{chat_id}/cerrar",
+                           {"contratacionId": contratacion_id})
+
+
+@app.post("/api/bff/incidentes", tags=["bff"], status_code=201,
+          summary="Reportar un incidente, solo mientras el servicio no esté cerrado")
+async def bff_incidente(cuerpo: dict):
+    contratacion = await _pedir("contrataciones", f"/contrataciones/{cuerpo.get('contratacionId')}")
+    if contratacion is None:
+        raise HTTPException(404, "Contratación no encontrada")
+
+    ciclo = await _ciclo(contratacion)
+    if ciclo["cerrada"]:
+        raise HTTPException(409, "El servicio ya está cerrado: no admite nuevos reportes")
+    if ciclo["incidenteReportado"]:
+        raise HTTPException(409, "Ya hay un incidente reportado para este servicio")
+    if not ciclo["puedeReportarIncidente"]:
+        raise HTTPException(409, f"No se puede reportar un incidente con el servicio en "
+                                 f"'{contratacion['estado']}'")
+    return await _enviar("soporte", "/incidentes", cuerpo)
 
 
 @app.post("/api/bff/prestadores/{prestador_id}/plan", tags=["bff"],
@@ -671,4 +909,77 @@ async def proxy(servicio: str, ruta: str, request: Request):
 async def proxy_escritura(servicio: str, ruta: str, cuerpo: dict):
     if servicio not in SERVICIOS:
         raise HTTPException(404, f"Servicio '{servicio}' desconocido. Consulta /api/servicios.")
+    # Estas escrituras dependen del ciclo de vida del servicio, que solo se
+    # valida en su ruta BFF. Reenviarlas tal cual permitiría saltarse la regla.
+    if f"{servicio}/{ruta}".rstrip("/") in _ESCRITURAS_CON_REGLA:
+        raise HTTPException(403, f"Usa {_ESCRITURAS_CON_REGLA[f'{servicio}/{ruta}'.rstrip('/')]}, "
+                                 "que valida el estado del servicio")
+    if servicio == "comunicacion" and ruta.rstrip("/").endswith("/cerrar"):
+        raise HTTPException(403, "Un chat se cierra solo, cuando se cierra su servicio")
     return await _enviar(servicio, f"/{ruta}", cuerpo)
+
+
+_ESCRITURAS_CON_REGLA = {
+    "confianza/resenas": "POST /api/bff/resenas",
+    "soporte/incidentes": "POST /api/bff/incidentes",
+}
+
+
+# --- Proxy WebSocket -------------------------------------------------------
+# El chat en tiempo real también entra por el gateway: el navegador abre
+# /ws/comunicacion/conversaciones/{id} y aquí se conecta al WebSocket del
+# servicio dueño y se copian los mensajes en ambos sentidos. Solo se exponen
+# los contextos que tienen tiempo real.
+_WS_EXPUESTOS = {"comunicacion"}
+
+
+@app.websocket("/ws/{servicio}/{ruta:path}")
+async def proxy_ws(ws: WebSocket, servicio: str, ruta: str):
+    # Los rechazos se hacen después de aceptar, para que el código de cierre
+    # llegue al navegador (cerrar sin aceptar es un HTTP 403 sin detalle).
+    if servicio not in _WS_EXPUESTOS:
+        await ws.accept()
+        await ws.close(code=4404, reason=f"'{servicio}' no tiene tiempo real")
+        return
+
+    destino = SERVICIOS[servicio]["url"].replace("http", "ws", 1) + f"/ws/{ruta}"
+    if ws.url.query:
+        destino += f"?{ws.url.query}"
+
+    try:
+        servicio_ws = await websockets.connect(destino, open_timeout=5)
+    except websockets.exceptions.InvalidStatus as e:
+        # El servicio rechazó el handshake.
+        await ws.accept()
+        await ws.close(code=4404 if e.response.status_code in (403, 404) else 1011)
+        return
+    except (OSError, TimeoutError, websockets.exceptions.WebSocketException):
+        # 1013 "inténtalo más tarde": el cliente reintentará solo.
+        print(f"[gateway] WS {servicio}/{ruta}: el servicio no responde", flush=True)
+        await ws.accept()
+        await ws.close(code=1013, reason="Servicio no disponible")
+        return
+
+    await ws.accept()
+
+    async def del_cliente() -> None:
+        while True:
+            await servicio_ws.send(await ws.receive_text())
+
+    async def del_servicio() -> None:
+        async for mensaje in servicio_ws:
+            await ws.send_text(mensaje if isinstance(mensaje, str) else mensaje.decode())
+
+    tareas = [asyncio.create_task(del_cliente()), asyncio.create_task(del_servicio())]
+    try:
+        # Cuando cualquiera de los dos lados se va, se cierra el otro.
+        await asyncio.wait(tareas, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for tarea in tareas:
+            tarea.cancel()
+        await servicio_ws.close()
+        codigo = servicio_ws.close_code or 1000
+        try:
+            await ws.close(code=codigo if codigo != 1006 else 1011)
+        except RuntimeError:
+            pass  # el navegador ya había cerrado

@@ -2,7 +2,8 @@
 
 Dueño del ciclo de vida de la contratación (solicitud → check-in → check-out →
 completada) y de la comisión calculada, en la base `jobbi_contrataciones`. Es el
-productor del evento CONTRATACION_COMPLETADA que Monetización consume vía SNS/SQS.
+productor del evento CONTRATACION_COMPLETADA que Monetización consume vía SNS/SQS
+(ver `outbox.py`).
 """
 
 from __future__ import annotations
@@ -12,14 +13,17 @@ from datetime import date, datetime
 from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from common import eventos
 from common.db import condiciones, inicializar, nuevo_id, paginar_consulta
 from common.enums import EstadoContratacion, MedioPago, valores
-from common.service import crear_servicio
+from common.service import crear_servicio, resumen_latencias
 
-from .models import AcuerdoTarifa, Contratacion
-from .tablas import AcuerdoTarifaFila, ContratacionFila
+from .models import AcuerdoTarifa, Contratacion, EventoOutbox
+from .outbox import RelayOutbox, registrar_evento
+from .tablas import AcuerdoTarifaFila, ContratacionFila, EventoOutboxFila
 
 app = crear_servicio(
     nombre="contrataciones",
@@ -40,6 +44,9 @@ _FLUJO = [
     EstadoContratacion.COMPLETADA,
 ]
 
+# Estados en los que el servicio ya no está en curso.
+_TERMINALES = (EstadoContratacion.COMPLETADA.value, EstadoContratacion.CANCELADA.value)
+
 
 Sesion: sessionmaker[Session] = inicializar("contrataciones")
 
@@ -47,6 +54,14 @@ Sesion: sessionmaker[Session] = inicializar("contrataciones")
 def sesion() -> Session:
     with Sesion() as s:
         yield s
+
+
+relay = RelayOutbox(Sesion)
+
+
+@app.on_event("startup")
+def _arrancar_relay() -> None:
+    relay.iniciar()
 
 
 # --- Acuerdo de tarifa -----------------------------------------------------
@@ -83,6 +98,22 @@ def _acuerdo_o_404(s: Session, acuerdo_id: str) -> AcuerdoTarifaFila:
 @app.post("/acuerdos", tags=["acuerdos"], status_code=201,
           summary="Proponer una tarifa dentro de la conversación")
 def alta_acuerdo(peticion: AltaAcuerdo, s: Session = Depends(sesion)):
+    # Un servicio a la vez por contacto: mientras el anterior no haya terminado
+    # (o se haya cancelado), no se negocia otro. Que además esté calificado lo
+    # exige el gateway, porque las reseñas viven en Confianza.
+    en_curso = s.scalars(
+        select(ContratacionFila)
+        .join(AcuerdoTarifaFila, AcuerdoTarifaFila.contratacionId == ContratacionFila.id)
+        .where(
+            AcuerdoTarifaFila.contactoId == peticion.contactoId,
+            ContratacionFila.estado.not_in(_TERMINALES),
+        )
+    ).first()
+    if en_curso:
+        raise HTTPException(
+            409, f"Ya hay un servicio con este contacto en estado '{en_curso.estado}': "
+                 "termínalo antes de acordar uno nuevo")
+
     # Un contacto negocia una tarifa a la vez: proponer de nuevo reemplaza la
     # propuesta abierta en lugar de acumular botones en el chat.
     abierto = s.scalars(select(AcuerdoTarifaFila).where(
@@ -184,6 +215,9 @@ def listar_acuerdos(
     contactoIds: str | None = Query(
         None, description="Varios contactos separados por coma; así pide el gateway "
                           "de una vez el acuerdo vigente de toda la bandeja"),
+    conversacionIds: str | None = Query(
+        None, description="Varios chats separados por coma: hay un chat por servicio"),
+    contratacionId: str | None = Query(None, description="El acuerdo del que nació esa contratación"),
     demandanteId: str | None = Query(None),
     prestadorId: str | None = Query(None),
     estado: str | None = Query(None, description="PENDIENTE, ACEPTADO, RECHAZADO, REEMPLAZADO"),
@@ -192,9 +226,12 @@ def listar_acuerdos(
     s: Session = Depends(sesion),
 ):
     lista = [c.strip() for c in contactoIds.split(",") if c.strip()] if contactoIds else None
+    chats = [c.strip() for c in conversacionIds.split(",") if c.strip()] if conversacionIds else None
     consulta = select(AcuerdoTarifaFila).where(*condiciones(
         (AcuerdoTarifaFila.contactoId == contactoId) if contactoId else None,
         AcuerdoTarifaFila.contactoId.in_(lista) if lista else None,
+        AcuerdoTarifaFila.conversacionId.in_(chats) if chats else None,
+        (AcuerdoTarifaFila.contratacionId == contratacionId) if contratacionId else None,
         (AcuerdoTarifaFila.demandanteId == demandanteId) if demandanteId else None,
         (AcuerdoTarifaFila.prestadorId == prestadorId) if prestadorId else None,
         (func.upper(AcuerdoTarifaFila.estado) == estado.upper()) if estado else None,
@@ -246,8 +283,98 @@ def check_out(contratacion_id: str, s: Session = Depends(sesion)):
     # El check-out es el cierre del trabajo: no queda ningún paso intermedio
     # entre marcar la salida y dar el servicio por completado.
     fila.estado = EstadoContratacion.COMPLETADA.value
-    s.commit()
+
+    # Transactional Outbox: el evento se guarda en la misma transacción que el
+    # cierre. Monetización lo recibirá por SNS → SQS y cobrará la comisión; este
+    # contexto no sabe (ni necesita saber) quién lo consume.
+    registrar_evento(s, eventos.CONTRATACION_COMPLETADA, fila.id, {
+        "contratacionId": fila.id,
+        "prestadorId": fila.prestadorId,
+        "demandanteId": fila.demandanteId,
+        "oficioId": fila.oficioId,
+        "valorAcordado": fila.valorAcordado,
+        "medioPago": fila.medioPago,
+        "porcentajeComisionAplicado": fila.porcentajeComisionAplicado,
+        "montoComision": fila.montoComision,
+        "fechaCheckOut": fila.checkOut.isoformat(),
+        # Forma que ya entendía el consumidor original.
+        "monto": fila.montoComision,
+        "servicio_id": fila.id,
+    })
+    try:
+        s.commit()
+    except IntegrityError:
+        # Otro check-out simultáneo de la misma contratación ganó la carrera y
+        # ya dejó su evento: se devuelve el estado que quedó guardado.
+        s.rollback()
+        return Contratacion.model_validate(_contratacion_o_404(s, contratacion_id))
+
+    relay.despertar()
     return Contratacion.model_validate(fila)
+
+
+# --- Outbox (observabilidad del Pub/Sub) -----------------------------------
+
+@app.get("/outbox", tags=["pub/sub"], summary="Eventos de la bandeja de salida")
+def listar_outbox(
+    estado: str | None = Query(None, description="PENDIENTE o PUBLICADO"),
+    agregadoId: str | None = Query(None, description="Id de la contratación"),
+    tipo: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=200),
+    s: Session = Depends(sesion),
+):
+    consulta = select(EventoOutboxFila).where(*condiciones(
+        (EventoOutboxFila.estado == estado.upper()) if estado else None,
+        (EventoOutboxFila.agregadoId == agregadoId) if agregadoId else None,
+        (EventoOutboxFila.tipo == tipo) if tipo else None,
+    )).order_by(EventoOutboxFila.fechaCreacion.desc())
+    return paginar_consulta(s, consulta, EventoOutbox, page, size)
+
+
+@app.get("/outbox/resumen", tags=["pub/sub"], summary="Estado del outbox y del relay hacia SNS")
+def resumen_outbox(s: Session = Depends(sesion)):
+    por_estado = dict(s.execute(
+        select(EventoOutboxFila.estado, func.count()).group_by(EventoOutboxFila.estado)
+    ).all())
+    con_reintentos = s.scalar(select(func.count()).where(
+        EventoOutboxFila.estado == "PENDIENTE", EventoOutboxFila.intentos > 0,
+    )) or 0
+    mas_antiguo = s.scalar(select(func.min(EventoOutboxFila.fechaCreacion)).where(
+        EventoOutboxFila.estado == "PENDIENTE",
+    ))
+
+    # Latencia outbox → SNS de los últimos publicados. Se calcula en Python
+    # porque la resta de fechas no se escribe igual en PostgreSQL y en SQLite.
+    recientes = s.execute(
+        select(EventoOutboxFila.fechaCreacion, EventoOutboxFila.fechaPublicacion)
+        .where(EventoOutboxFila.estado == "PUBLICADO")
+        .order_by(EventoOutboxFila.fechaPublicacion.desc())
+        .limit(200)
+    ).all()
+    latencias = [(pub - creado).total_seconds() * 1000 for creado, pub in recientes]
+
+    return {
+        "total": sum(por_estado.values()),
+        "pendientes": por_estado.get("PENDIENTE", 0),
+        "publicados": por_estado.get("PUBLICADO", 0),
+        "pendientesConReintentos": con_reintentos,
+        "pendienteMasAntiguo": mas_antiguo,
+        "latenciaPublicacionMs": resumen_latencias(latencias),
+        "relay": {
+            "activo": relay.activo,
+            "tema": eventos.TOPIC_NAME,
+            "ultimaVuelta": relay.ultima_vuelta,
+            "ultimoError": relay.ultimo_error,
+        },
+    }
+
+
+@app.post("/outbox/publicar", tags=["pub/sub"],
+          summary="Forzar una pasada del relay (p. ej. tras recuperar LocalStack)")
+def forzar_publicacion():
+    relay.despertar()
+    return {"mensaje": "Relay despertado", "activo": relay.activo}
 
 
 @app.get("/contrataciones", tags=["contrataciones"], summary="Listar contrataciones")

@@ -9,6 +9,10 @@ class Conversacion(Esquema):
     id: str
     contactoId: str
     fechaInicio: date
+    estado: str = "ABIERTA"
+    creadaEn: datetime | None = None
+    fechaCierre: datetime | None = None
+    contratacionId: str | None = None
 
 
 class Mensaje(Esquema):

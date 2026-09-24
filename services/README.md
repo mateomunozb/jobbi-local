@@ -133,6 +133,13 @@ usuario, y es lo que el frontend usa para elegir la pantalla de destino.
 | GET | `/contrataciones/{id}/timeline` | pasos alcanzados y duración real del servicio |
 | GET | `/resumen` | `prestadorId`, `demandanteId` — totales, comisión y ticket promedio |
 | GET | `/enums` | EstadoContratacion, MedioPago, flujo canónico |
+| GET | `/outbox` | `estado`, `agregadoId`, `tipo` — eventos de la bandeja de salida |
+| GET | `/outbox/resumen` | pendientes, publicados, latencia outbox → SNS y estado del relay |
+| POST | `/outbox/publicar` | despierta el relay (p. ej. tras recuperar LocalStack) |
+
+El check-out (`POST /contrataciones/{id}/check-out`) guarda el evento
+`CONTRATACION_COMPLETADA` en `outbox_eventos` en la misma transacción, y el relay
+lo publica en SNS. Ver [docs/pubsub.md](../docs/pubsub.md).
 
 ### Comunicación — `/api/comunicacion`
 
@@ -166,7 +173,11 @@ usuario, y es lo que el frontend usa para elegir la pantalla de destino.
 | GET | `/billeteras/{id}/movimientos` | `tipo`, `desde`, `hasta` |
 | GET | `/movimientos` | `billeteraId`, `contratacionId`, `tipo` |
 | GET | `/resumen/prestador/{id}` | billetera, suscripción activa y comisiones |
-| GET | `/cobros` · `/cobros/estado-worker` | acumulado del worker SQS *(Pub/Sub original)* |
+| GET | `/planes` | tarifa de comisión de cada plan |
+| GET | `/cobros` | `limite` — últimos eventos procesados por el worker SQS (persistidos) |
+| GET | `/cobros/estado-worker` | worker, profundidad de cola y DLQ, resultados y latencia check-out → cobro |
+| GET | `/cobros/contratacion/{id}` | si la comisión de esa contratación ya se cobró |
+| POST | `/comisiones` | cobro síncrono (solo sin Pub/Sub; misma regla idempotente que el worker) |
 | POST | `/cobrar` | cobro síncrono *(Pub/Sub original)* |
 
 ### Soporte, Adquisición y Protección
@@ -180,6 +191,32 @@ usuario, y es lo que el frontend usa para elegir la pantalla de destino.
 | GET | `/api/proteccion/aseguradoras` · `/{id}` | |
 | GET | `/api/proteccion/planes-proteccion` · `/{id}` | `contratacionId`, `aseguradoraId`, `estado` |
 
+### Ciclo de vida de una contratación
+
+Terminar el trabajo (check-out) no cierra el servicio: todavía se puede calificar
+(una vez por parte) y reportar un incidente (uno). **Cuando el demandante lo
+califica, el servicio queda cerrado**: no admite más calificaciones ni reportes, y
+el chat queda libre para acordar un servicio nuevo. Mientras el anterior no esté
+cerrado no se puede acordar otro con la misma persona. El gateway calcula estas
+reglas en un solo lugar (`ciclo` en `/api/bff/contrataciones/{id}`) y el proxy
+genérico rechaza `POST /api/confianza/resenas` y `POST /api/soporte/incidentes`
+para que nadie se las salte.
+
+### Chat por servicio y en tiempo real
+
+- **Un chat por servicio.** `POST /api/bff/contactar` devuelve el chat ABIERTO
+  con esa persona, o abre uno nuevo si todos están cerrados. Cuando el
+  demandante califica el servicio, el gateway cierra su chat
+  (`POST /conversaciones/{id}/cerrar` en Comunicación, que el proxy genérico no
+  expone) y queda de solo lectura.
+- **WebSocket:** `ws://…/ws/comunicacion/conversaciones/{id}?usuarioId=…`
+  (gateway → Comunicación). El cliente envía `{"tipo":"mensaje","contenido":…}`
+  y `{"tipo":"escribiendo"}`; recibe `conectado`, `presencia`, `mensaje`,
+  `escribiendo`, `cerrada` y `error`. Un mensaje enviado por HTTP también se
+  difunde. Una conversación inexistente cierra con código 4404.
+- **Columnas nuevas en bases existentes:** `common/db.completar_columnas` añade
+  al arrancar las columnas que falten (nunca cambia ni borra nada).
+
 ### Composición BFF — `/api/bff`
 
 Agregan varios contextos en una sola llamada, para que el frontend no tenga que
@@ -191,9 +228,13 @@ conocer la topología interna ni encadenar seis peticiones.
 | `/api/bff/contrataciones/{id}` | contrataciones + identidad + mercado + monetización + confianza + soporte + protección |
 | `/api/bff/demandantes/{id}/inicio` | identidad + mercado + contrataciones + comunicación |
 | `/api/bff/catalogo` | mercado + identidad (pantalla de búsqueda) |
-| `/api/bff/mensajes` | mercado + comunicación + identidad (bandeja de chats) |
-| `/api/bff/contactar` *(POST)* | mercado + comunicación (abre contacto y conversación) |
+| `/api/bff/mensajes` | mercado + comunicación + identidad + contrataciones (bandeja: acuerdo vigente, `ciclo` y `servicioAnterior`); base de *Solicitudes* del prestador |
+| `/api/bff/contactar` *(POST)* | mercado + comunicación (abre contacto y conversación) y avisa al prestador (`NUEVO_CONTACTO`) |
 | `/api/bff/admin/metricas` | tablero del rol Admin: 6 contextos |
+| `/api/bff/resenas` *(POST)* | contrataciones + confianza + identidad: califica una sola vez y solo un servicio terminado |
+| `/api/bff/incidentes` *(POST)* | contrataciones + confianza + soporte: un reporte por servicio, mientras no esté cerrado |
+| `/api/bff/contrataciones/{id}/cobro` | contrataciones (outbox) + monetización: etapa `EN_OUTBOX → PUBLICADO → COBRADO` |
+| `/api/bff/pubsub/estado` | tablero del Pub/Sub: outbox, relay, colas, DLQ y worker |
 
 ---
 
@@ -247,3 +288,10 @@ flujos de escritura.
 | `models.py` | Esquemas de respuesta (Pydantic) — el contrato de la API |
 | `tablas.py` | Tablas (SQLAlchemy) — cómo se guardan |
 | `main.py` | Endpoints; traducen los filtros a cláusulas `WHERE` |
+
+## 5. Pruebas
+
+```bash
+../.venv/bin/pip install -r requirements-dev.txt
+../.venv/bin/python -m pytest -v      # desde services/
+```

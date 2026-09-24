@@ -59,6 +59,13 @@ class AltaIncidente(BaseModel):
 @app.post("/incidentes", tags=["incidentes"], status_code=201,
           summary="Reportar un incidente sobre una contratación")
 def alta_incidente(peticion: AltaIncidente, s: Session = Depends(sesion)):
+    # Un caso por contratación: un segundo reporte sobre el mismo servicio se
+    # añade a la investigación abierta, no abre otra.
+    if s.scalars(select(IncidenteFila).where(
+        IncidenteFila.contratacionId == peticion.contratacionId,
+    )).first():
+        raise HTTPException(409, "Ya hay un incidente reportado para este servicio")
+
     incidente = IncidenteFila(
         id=nuevo_id(),
         contratacionId=peticion.contratacionId,

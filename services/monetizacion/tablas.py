@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, Float, ForeignKey, String
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.db import Base
@@ -50,3 +50,33 @@ class MovimientoBilleteraFila(Base):
     tipo: Mapped[str] = mapped_column(String(30), index=True)
     monto: Mapped[float] = mapped_column(Float)
     fecha: Mapped[date] = mapped_column(Date, index=True)
+
+
+class EventoProcesadoFila(Base):
+    """Bandeja de entrada del consumidor (patrón Idempotent Consumer).
+
+    SQS entrega *al menos una vez*: el mismo mensaje puede llegar dos veces, y
+    el outbox del productor también puede publicarlo dos veces. Registrar aquí
+    cada `eventoId` en la misma transacción que el cobro hace que el duplicado
+    choque con la clave primaria y se descarte sin tocar la billetera.
+
+    Es además el historial persistente de lo que procesó el worker (antes vivía
+    en una lista en memoria que se perdía al reiniciar el Pod).
+    """
+
+    __tablename__ = "eventos_procesados"
+
+    eventoId: Mapped[str] = mapped_column(String(100), primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(60), index=True)
+    contratacionId: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    prestadorId: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    monto: Mapped[float] = mapped_column(Float, default=0.0)
+    # COMISION_COBRADA | YA_COBRADA | SIN_COBRO_MEDIO_PLATAFORMA |
+    # REGISTRADO_SIN_CONTRATACION | COBRO_SINCRONO
+    resultado: Mapped[str] = mapped_column(String(40), index=True)
+    origen: Mapped[str] = mapped_column(String(20))  # ASINCRONO_SQS | SINCRONO
+    mensajeSqsId: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ocurridoEn: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fechaProcesado: Mapped[datetime] = mapped_column(DateTime, index=True)
+    # Desde que ocurrió el hecho (check-out) hasta que quedó cobrado.
+    latenciaMs: Mapped[float | None] = mapped_column(Float, nullable=True)

@@ -35,7 +35,10 @@ spec:
           value: "http://localstack.aws-local.svc.cluster.local:4566"
         - { name: AWS_REGION, value: "us-east-1" }
         - { name: QUEUE_NAME, value: "monetizacion-events-queue" }
+        - { name: QUEUE_DLQ_NAME, value: "monetizacion-events-dlq" }
         - { name: SQS_ENABLED, value: "true" }
+        # Hilos consumidores (long polling, lotes de 10 mensajes cada uno).
+        - { name: SQS_HILOS, value: "2" }
         readinessProbe:
           httpGet: { path: /health, port: 8000 }
           initialDelaySeconds: 3

@@ -129,6 +129,12 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef: { name: postgres-urls, key: contrataciones }
+        # Productor del evento CONTRATACION_COMPLETADA (outbox → SNS).
+        - name: AWS_ENDPOINT_URL
+          value: "http://localstack.aws-local.svc.cluster.local:4566"
+        - { name: AWS_REGION, value: "us-east-1" }
+        - { name: SNS_TOPIC_NAME, value: "contratacion-completada-topic" }
+        - { name: SNS_ENABLED, value: "true" }
         readinessProbe:
           httpGet: { path: /health, port: 8003 }
           initialDelaySeconds: 3
@@ -158,6 +164,9 @@ metadata:
   namespace: aws-local
   labels: { app: comunicacion, contexto: comunicacion }
 spec:
+  # Una sola réplica: las salas del chat en tiempo real (WebSocket) viven en la
+  # memoria del proceso. Escalar requiere un canal compartido entre réplicas
+  # (p. ej. Redis pub/sub); ver services/comunicacion/salas.py.
   replicas: 1
   selector:
     matchLabels: { app: comunicacion }

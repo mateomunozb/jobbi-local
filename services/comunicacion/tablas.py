@@ -11,12 +11,27 @@ from common.db import Base
 
 
 class ConversacionFila(Base):
+    """Un chat por servicio.
+
+    Un contacto (la pareja demandante–prestador) puede tener varias
+    conversaciones a lo largo del tiempo, pero solo una ABIERTA: cuando el
+    servicio que se acordó en ella se cierra, el chat queda CERRADO (solo
+    lectura) y volver a contactar abre uno nuevo.
+    """
+
     __tablename__ = "conversaciones"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     # El contacto vive en el contexto Mercado: solo se guarda su UUID.
     contactoId: Mapped[str] = mapped_column(String(36), index=True)
     fechaInicio: Mapped[date] = mapped_column(Date)
+    # Columnas añadidas con el chat por servicio: anulables o con valor por
+    # defecto, para que las bases existentes las ganen sin perder datos.
+    estado: Mapped[str] = mapped_column(String(20), server_default="ABIERTA", default="ABIERTA", index=True)
+    creadaEn: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fechaCierre: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # El servicio con el que se cerró (Contrataciones): solo el UUID.
+    contratacionId: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class MensajeFila(Base):

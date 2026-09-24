@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
-from sqlalchemy import Select, create_engine, func, select
+from sqlalchemy import Select, create_engine, func, inspect, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -81,8 +81,38 @@ def inicializar(servicio: str) -> sessionmaker[Session]:
     motor = crear_motor(servicio)
     esperar_a_la_base(motor)
     Base.metadata.create_all(motor)
+    completar_columnas(motor)
     print(f"[db] Contexto '{servicio}' listo en {url_de(servicio).split('@')[-1]}", flush=True)
     return sessionmaker(motor, expire_on_commit=False)
+
+
+def completar_columnas(motor) -> None:
+    """Añade a las tablas existentes las columnas nuevas del modelo.
+
+    `create_all` crea tablas que no existen, pero no toca las que ya están: si
+    el modelo gana una columna, una base con datos se quedaría sin ella. Esta es
+    la migración mínima que cubre ese caso, y solo ese: **agrega** columnas (que
+    deben ser anulables o tener `server_default`), nunca cambia ni borra nada.
+    Un sistema en producción usaría migraciones versionadas (Alembic).
+    """
+    inspector = inspect(motor)
+    existentes = set(inspector.get_table_names())
+    with motor.begin() as conexion:
+        for tabla in Base.metadata.sorted_tables:
+            if tabla.name not in existentes:
+                continue
+            actuales = {c["name"] for c in inspector.get_columns(tabla.name)}
+            for columna in tabla.columns:
+                if columna.name in actuales:
+                    continue
+                tipo = columna.type.compile(dialect=motor.dialect)
+                defecto = ""
+                if columna.server_default is not None:
+                    defecto = f" DEFAULT '{columna.server_default.arg}'"
+                conexion.execute(text(
+                    f'ALTER TABLE {tabla.name} ADD COLUMN "{columna.name}" {tipo}{defecto}'
+                ))
+                print(f"[db] Columna añadida: {tabla.name}.{columna.name}", flush=True)
 
 
 # --- Consultas -------------------------------------------------------------

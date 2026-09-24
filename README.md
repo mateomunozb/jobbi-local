@@ -4,6 +4,12 @@ Este repositorio contiene la arquitectura de emulación local para la integraci�
 
 Además incluye el **backend de microservicios** (`services/`), con un servicio FastAPI por contexto delimitado del modelo de dominio y un **API Gateway** como punto de entrada, y el **frontend** (`frontend/`) en **Next.js**, ya **conectado al backend**: registro, inicio de sesión y todas las pantallas consumen datos reales del clúster.
 
+> **Pub/Sub:** al hacer check-out, Contrataciones guarda el evento
+> `CONTRATACION_COMPLETADA` en su *outbox* y lo publica en SNS. Monetización lo
+> consume de su cola SQS y cobra la comisión. Cómo está hecho y cómo probarlo
+> (frontend, pruebas automatizadas, carga y estrés con k6):
+> **[docs/pubsub.md](docs/pubsub.md)**.
+
 ---
 
 ## ⚡ Arranque rápido
@@ -349,6 +355,13 @@ kubectl get pods -n aws-local -w
 
 ### 3. Aprovisionar los Recursos AWS (SNS Topic & SQS Queue)
 
+> **Ya no hace falta hacerlo a mano.** LocalStack ejecuta
+> `scripts/init-aws-local.sh` al arrancar (ConfigMap `localstack-init`) y crea
+> el tema, la cola, la DLQ y la suscripción. El Pod queda *Ready* cuando termina.
+> Si quieres repetirlo desde tu máquina, abre el port-forward de abajo y corre
+> `./scripts/init-aws-local.sh`, que es seguro de correr varias veces. Los
+> comandos manuales se conservan como referencia.
+
 1. En una **segunda terminal**, abre el reenvío de puertos hacia LocalStack (déjalo corriendo en segundo plano):
    ```bash
    kubectl port-forward svc/localstack 4566:4566 -n aws-local
@@ -561,14 +574,17 @@ El catálogo completo de endpoints está en [`services/README.md`](services/READ
 > la terminal** (por eso no sirve dentro de `$(...)`): en esas plataformas usa
 > `kubectl port-forward`, como arriba.
 
-> **Nota:** el backend no necesita LocalStack para responder consultas. Solo el
-> worker SQS de Monetización lo usa; si LocalStack no está desplegado, ese worker
-> reintenta en segundo plano y el resto de la API sigue respondiendo con normalidad.
+> **Nota:** las consultas no necesitan LocalStack, pero **el cobro de comisiones
+> sí**, porque viaja como evento. Por eso `deploy-backend.sh` también despliega
+> LocalStack. Si LocalStack cae, el check-out sigue funcionando: los eventos
+> esperan en el outbox de Contrataciones y se publican cuando vuelve.
 
 #### Opción B — Local, sin Kubernetes (para desarrollar)
 
-Levanta los diez procesos en tu máquina, crea el entorno virtual la primera vez
-y apaga el worker SQS (no hay LocalStack fuera del clúster):
+Levanta los diez procesos en tu máquina y crea el entorno virtual la primera
+vez. Si Docker está disponible, también levanta LocalStack en un contenedor, así
+que el Pub/Sub funciona igual que en el clúster. Con `PUBSUB=0`, o sin Docker,
+el gateway cobra de forma síncrona:
 
 ```bash
 ./scripts/run-backend-local.sh
@@ -637,6 +653,16 @@ curl -s $BASE/api/bff/admin/metricas | jq '.contrataciones, .incidentes.abiertos
 También puedes explorar todo desde Swagger: `$BASE/docs` para el gateway, y el
 `/docs` de cada microservicio haciendo `kubectl port-forward` a su puerto.
 
+### Prueba de punta a punta del Pub/Sub
+
+```bash
+./scripts/test-pubsub.sh                      # check-out → outbox → SNS → SQS → billetera
+./scripts/test-pubsub.sh --consumidor-caido   # (Minikube) el evento espera a que vuelva Monetización
+cd services && ../.venv/bin/python -m pytest  # pruebas automatizadas del patrón
+```
+
+Detalle y prueba desde el frontend en [docs/pubsub.md](docs/pubsub.md).
+
 ### Prueba Manual Pub/Sub (SNS -> SQS -> Worker Python)
 
 1. Publica un evento simulando una contratación completada desde tu terminal principal:
@@ -655,7 +681,7 @@ También puedes explorar todo desde Swagger: `$BASE/docs` para el gateway, y el
        --message '{"evento": "CONTRATACION_COMPLETADA", "monto": 45000, "servicio_id": "SERV-READMES-01"}'
    ```
 
-2. Consulta el endpoint del microservicio para verificar que el worker asíncrono procesó el mensaje:
+2. Consulta el endpoint del microservicio para verificar que el worker asíncrono procesó el mensaje (como no trae contratación, queda como `REGISTRADO_SIN_CONTRATACION`, sin tocar billeteras):
 
    **Windows (PowerShell):**
    ```powershell
@@ -674,7 +700,7 @@ También puedes explorar todo desde Swagger: `$BASE/docs` para el gateway, y el
 ```text
 .
 ├── k8s/
-│   ├── localstack-deployment.yaml    # Infraestructura emulada de AWS (LocalStack)
+│   ├── localstack-deployment.yaml    # LocalStack + init hook que crea SNS, SQS y DLQ
 │   ├── postgres-deployment.yaml      # PostgreSQL: una base por contexto + PVC
 │   ├── domain-services.yaml          # 8 microservicios de dominio (Deployment + Service)
 │   ├── monetizacion-deployment.yaml  # Monetización (además consumidor SQS)
@@ -685,7 +711,7 @@ También puedes explorar todo desde Swagger: `$BASE/docs` para el gateway, y el
 │   ├── gateway/                      # Enrutamiento /api/* y composición BFF
 │   ├── identidad/                    # Usuario, PerfilDemandante, PerfilPrestador
 │   ├── mercado/                      # Categoría, Oficio, PrestadorOficio, Búsqueda, Contacto
-│   ├── contrataciones/               # Contratación y su ciclo de vida
+│   ├── contrataciones/               # Contratación, su ciclo de vida y el outbox del evento
 │   ├── comunicacion/                 # Conversación, Mensaje, Notificación
 │   ├── confianza/                    # VerificaciónIdentidad, AliadoVerificación, Reseña
 │   ├── monetizacion/                 # Pago, Suscripción, Billetera + worker SQS
@@ -705,7 +731,8 @@ También puedes explorar todo desde Swagger: `$BASE/docs` para el gateway, y el
 │   ├── Dockerfile                    # Imagen multi-etapa (output: standalone)
 │   └── package.json                  # Dependencias y scripts (pnpm)
 ├── scripts/
-│   ├── init-aws-local.sh             # Aprovisionamiento SNS/SQS en LocalStack
+│   ├── init-aws-local.sh             # Aprovisionamiento SNS/SQS/DLQ (idempotente)
+│   ├── test-pubsub.sh                # Prueba funcional de punta a punta del Pub/Sub
 │   ├── deploy-all.sh                 # Build + despliegue de todo (backend y frontend)
 │   ├── build-backend-image.sh        # Build + carga de la imagen del backend en Minikube
 │   ├── deploy-backend.sh             # Despliegue de los 9 contextos + gateway
@@ -713,8 +740,10 @@ También puedes explorar todo desde Swagger: `$BASE/docs` para el gateway, y el
 │   ├── smoke-test-backend.sh         # Prueba de humo de 29 endpoints (crea datos propios)
 │   ├── reset-datos.sh                # Vacía las nueve bases y reinicia los servicios
 │   ├── build-frontend-image.sh       # Build + carga de la imagen del frontend en Minikube
-│   └── run-load-test.ps1             # Prueba de carga k6 (Windows)
-├── tests/k6/                         # Scripts de prueba de carga
+│   ├── run-load-test.sh              # Carga / estrés / pico con k6 (macOS / Linux)
+│   └── run-load-test.ps1             # Lo mismo en Windows
+├── tests/k6/                         # e2e-checkout-pubsub.js, load-test-pubsub.js, lib/escenarios.js
+├── docs/                             # tecnologias-y-flujo.md, pubsub.md
 └── README.md                         # Instrucciones de ejecución
 ```
 
@@ -730,56 +759,29 @@ También puedes explorar todo desde Swagger: `$BASE/docs` para el gateway, y el
 > suscripciones y billetera. El `Service` de Kubernetes conserva su nombre y puerto
 > (`servicio-monetizacion:8000`), así que la prueba de carga k6 sigue siendo válida.
 
-Aquí tienes el bloque formateado en Markdown exclusivo para la sección de las pruebas de carga, listo para copiar y pegar directamente en tu archivo `README.md`:
+## 🧪 Pruebas de Carga y Estrés (k6)
 
+```bash
+./scripts/run-load-test.sh [e2e|sns] [humo|carga|estres|pico] [vus]
 
-## 🧪 Pruebas de Carga y Rendimiento (k6)
+./scripts/run-load-test.sh e2e carga        # flujo completo por el gateway
+./scripts/run-load-test.sh e2e estres 60    # escalones hasta 60 VUs
+./scripts/run-load-test.sh e2e pico         # ráfaga repentina
+./scripts/run-load-test.sh sns carga        # solo el broker (SNS → SQS → worker)
+```
 
-El proyecto incluye un script de prueba de carga con **k6** (`tests/k6/load-test-pubsub.js`) diseñado para simular ráfagas de contrataciones publicando eventos masivos en el Tema SNS y validar la ingesta asíncrona desacoplada del microservicio de Monetización a través de SQS.
+En Windows: `powershell -ExecutionPolicy Bypass -File .\scripts\run-load-test.ps1 e2e carga`.
+Usa k6 nativo si está instalado y, si no, la imagen `grafana/k6`.
 
-### Requisitos previos de ejecución:
-Asegúrate de tener corriendo los port-forwards activos en terminales independientes:
-* `kubectl port-forward svc/localstack 4566:4566 -n aws-local`
-* `kubectl port-forward svc/servicio-monetizacion 8000:8000 -n aws-local`
+- **`e2e`** necesita `kubectl port-forward svc/api-gateway 8080:8080 -n aws-local`.
+- **`sns`** necesita los port-forwards de LocalStack (4566) y Monetización (8000).
 
-### Ejecución de la Prueba:
+Cada escenario de `e2e` termina verificando la **consistencia eventual**: la
+comisión cobrada debe igualar la de los servicios completados, sin eventos
+perdidos ni duplicados y con la DLQ vacía. Escenarios, métricas y resultados de
+referencia en [docs/pubsub.md](docs/pubsub.md#e-pruebas-de-carga-estrés-y-pico-k6).
 
-* **En Windows (PowerShell):**
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File .\scripts\run-load-test.ps1
-* **En macOS / Linux (Bash):**
-   ```bash
-   ./scripts/run-load-test.sh
 ---
-
-## 📊 Resultados de la Prueba de Carga
-
-### Resumen de Ejecución de Métricas con k6
-
-```text
-     ✓ Publicación en SNS exitosa (HTTP 200)
-
-     checks.........................: 100.00% ✓ 2433     ✗ 0  
-     data_received..................: 890 kB  17.8 kB/s
-     data_sent......................: 700 kB  14.0 kB/s
-     http_req_duration..............: avg=18.42ms min=3.1ms med=14.2ms max=112.5ms p(95)=42.1ms
-     http_reqs......................: 2433    48.58/s
-     vus............................: 20      min=1      max=20
-
-```
-
-### Hallazgos y Validaciones de Arquitectura
-
-1. **Rendimiento e Ingesta:** Se publicaron **2,433 eventos de contratación** de forma síncrona hacia el SNS Topic con un throughput promedio de **~48.5 peticiones/segundo** y una latencia en el percentil 95 ($p_{95}$) de **42.1 ms**.
-2. **Disponibilidad y Tasa de Éxito:** Se registró un **100% de solicitudes exitosas (HTTP 200)** con **0% de errores de comunicación**.
-3. **Desacoplamiento y Consistencia Eventual:** Al consultar el acumulador del microservicio mediante `GET http://localhost:8000/cobros`:
-```json
-{
-  "total": 2433,
-  "cobros": [ ... ]
-}
-
-```
 
 Para apagar completamente el ambiente local y liberar los recursos de tu máquina, sigue estos pasos ordenados desde tu terminal:
 

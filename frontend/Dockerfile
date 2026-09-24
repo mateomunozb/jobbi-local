@@ -12,6 +12,10 @@ RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# Destino del WebSocket del chat (/ws/* en next.config.mjs). Queda fijo en la
+# imagen al construirla: es la URL del gateway dentro del clúster.
+ARG API_GATEWAY_URL=http://api-gateway.aws-local.svc.cluster.local:8080
+ENV API_GATEWAY_URL=$API_GATEWAY_URL
 RUN pnpm build
 
 # Etapa 3: runtime mínimo

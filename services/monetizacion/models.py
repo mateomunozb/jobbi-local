@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from common.esquemas import Esquema
 
@@ -37,3 +37,17 @@ class MovimientoBilletera(Esquema):
     tipo: str
     monto: float
     fecha: date
+
+
+class EventoProcesado(Esquema):
+    eventoId: str
+    tipo: str
+    contratacionId: str | None = None
+    prestadorId: str | None = None
+    monto: float
+    resultado: str
+    origen: str
+    mensajeSqsId: str | None = None
+    ocurridoEn: datetime | None = None
+    fechaProcesado: datetime
+    latenciaMs: float | None = None

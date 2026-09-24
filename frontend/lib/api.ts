@@ -21,7 +21,15 @@ export type Contratacion = { id: string; demandanteId: string; prestadorId: stri
 export type PasoTimeline = { estado: string; alcanzado: boolean }
 export type Timeline = { contratacionId: string; estadoActual: string; checkIn: string | null; checkOut: string | null; duracionMinutos: number | null; pasos: PasoTimeline[] }
 export type Mensaje = { id: string; conversacionId: string; remitenteId: string; contenido: string; fechaEnvio: string; leido: boolean }
-export type Conversacion = { id: string; contactoId: string; fechaInicio: string; totalMensajes: number; noLeidos: number; ultimoMensaje: Mensaje | null }
+/**
+ * Hay un chat por servicio: ABIERTA mientras se negocia y se ejecuta; CERRADA
+ * (solo lectura) cuando su servicio se cierra. Contactar de nuevo abre otra.
+ */
+export type Conversacion = {
+  id: string; contactoId: string; fechaInicio: string
+  estado: "ABIERTA" | "CERRADA"; creadaEn: string | null; fechaCierre: string | null; contratacionId: string | null
+  totalMensajes: number; noLeidos: number; ultimoMensaje: Mensaje | null
+}
 /** Negociación de la tarifa dentro del chat, previa al servicio. */
 export type AcuerdoTarifa = {
   id: string; contactoId: string; conversacionId: string | null
@@ -31,10 +39,25 @@ export type AcuerdoTarifa = {
   porcentajeComisionCongelado: number | null; planPrestadorAlAcordar: string | null
   contratacionId: string | null; fechaPropuesta: string; fechaCierre: string | null
 }
+/**
+ * Qué se puede hacer todavía con una contratación. Lo calcula el gateway (cruza
+ * Contrataciones, Confianza y Soporte) y las pantallas solo lo obedecen: un
+ * servicio terminado admite calificar y reportar; al calificarlo el demandante
+ * queda cerrado y el chat vuelve a quedar libre para acordar otro.
+ */
+export type CicloContratacion = {
+  terminada: boolean
+  cerrada: boolean
+  calificadaPor: { DEMANDANTE: boolean; PRESTADOR: boolean }
+  puedeCalificar: { DEMANDANTE: boolean; PRESTADOR: boolean }
+  incidenteReportado: boolean
+  puedeReportarIncidente: boolean
+}
 /** Conversación ya resuelta por el gateway: con quién se habla y qué se acordó. */
 export type ConversacionEnBandeja = Conversacion & {
   contacto: Contacto; otraParteId: string; otraParteNombre: string
   acuerdo: AcuerdoTarifa | null; contratacion: Contratacion | null
+  ciclo: CicloContratacion | null
 }
 export type Notificacion = { id: string; usuarioId: string; tipo: string; canal: string; contenido: string; fechaEnvio: string; leida: boolean }
 export type Resena = { id: string; contratacionId: string; autorId: string; receptorId: string; puntuacion: number; comentario: string; fecha: string; estadoModeracion: string }
@@ -43,6 +66,40 @@ export type Movimiento = { id: string; billeteraId: string; contratacionId: stri
 export type Incidente = { id: string; contratacionId: string; tipo: string; estado: string; evidenciaDescripcion: string; resolucion: string | null; fechaApertura: string; fechaCierre: string | null }
 
 export type Pagina<T> = { total: number; page: number; size: number; pages: number; items: T[] }
+
+// --- Pub/Sub: el cobro de la comisión viaja como evento --------------------
+// Contrataciones guarda CONTRATACION_COMPLETADA en su outbox al hacer check-out,
+// el relay lo publica en SNS, y Monetización lo consume de su cola SQS y cobra.
+
+/** Etapa del evento de una contratación: outbox → SNS/SQS → billetera. */
+export type EtapaCobro = "SIN_EVENTO" | "EN_OUTBOX" | "PUBLICADO" | "COBRADO"
+export type EventoOutbox = { id: string; tipo: string; agregadoId: string; estado: "PENDIENTE" | "PUBLICADO"; intentos: number; ultimoError: string | null; fechaCreacion: string; fechaPublicacion: string | null; mensajeSnsId: string | null }
+export type EventoProcesado = { eventoId: string; tipo: string; resultado: string; origen: string; monto: number; fechaProcesado: string; latenciaMs: number | null }
+export type EstadoCobro = {
+  contratacionId: string
+  modo: "EVENTOS" | "SINCRONO"
+  etapa: EtapaCobro
+  evento: EventoOutbox | null
+  cobro: { cobrado: boolean; evento: EventoProcesado | null; movimiento: Movimiento | null; billetera: Billetera | null } | null
+}
+export type Latencias = { muestras: number; promedio: number | null; p95: number | null }
+export type Cola = { nombre: string; visibles?: number; enVuelo?: number; error?: string }
+export type EstadoPubSub = {
+  modo: "EVENTOS" | "SINCRONO"
+  productor: {
+    total: number; pendientes: number; publicados: number; pendientesConReintentos: number
+    latenciaPublicacionMs: Latencias
+    relay: { activo: boolean; tema: string; ultimaVuelta: string | null; ultimoError: string | null }
+  } | null
+  consumidor: {
+    workerActivo: boolean; conectado: boolean; hilos: number
+    cobrosProcesados: number; porResultado: Record<string, number>
+    desdeArranque: { recibidos: number; procesados: number; duplicadosDescartados: number; errores: number }
+    latenciaExtremoAExtremoMs: Latencias
+    ultimoError: string | null
+    colas: { principal: Cola; dlq: Cola } | null
+  } | null
+}
 
 /** Error con el código HTTP y el mensaje que devolvió el backend. */
 export class ApiError extends Error {
@@ -134,8 +191,13 @@ export const api = {
     enviar<{ acuerdo: AcuerdoTarifa; contratacion: Contratacion | null }>(`/bff/acuerdos/${acuerdoId}/aceptar`, { rol }),
   checkIn: (contratacionId: string) =>
     enviar<{ contratacion: Contratacion }>(`/bff/contrataciones/${contratacionId}/check-in`, {}),
+  // Con Pub/Sub (`cobroAsincrono`), `cobro` llega null: la comisión se carga
+  // cuando Monetización consume el evento, y se sigue con `estadoCobro`.
   checkOut: (contratacionId: string) =>
-    enviar<{ contratacion: Contratacion; cobro: { billetera: Billetera; movimiento: Movimiento; yaCobrada: boolean } | null }>(`/bff/contrataciones/${contratacionId}/check-out`, {}),
+    enviar<{ contratacion: Contratacion; cobro: { billetera: Billetera; movimiento: Movimiento; yaCobrada: boolean } | null; cobroAsincrono: boolean }>(`/bff/contrataciones/${contratacionId}/check-out`, {}),
+  estadoCobro: (contratacionId: string) =>
+    pedir<EstadoCobro>(`/bff/contrataciones/${contratacionId}/cobro`),
+  estadoPubSub: () => pedir<EstadoPubSub>("/bff/pubsub/estado"),
   publicarResena: (datos: { contratacionId: string; autorId: string; receptorId: string; puntuacion: number; comentario: string }) =>
     enviar<{ resena: Resena; resumen: { promedio: number; total: number } | null }>("/bff/resenas", datos),
   cambiarPlan: (prestadorId: string, plan: "FREE" | "PRO") =>
@@ -162,14 +224,15 @@ export const api = {
     enviar<{ contacto: Contacto; conversacion: Conversacion }>("/bff/contactar", { demandanteId, prestadorId }),
   enviarMensaje: (conversacionId: string, remitenteId: string, contenido: string) =>
     enviar<Mensaje>("/comunicacion/mensajes", { conversacionId, remitenteId, contenido }),
+  // Pasa por el gateway, que rechaza el reporte si el servicio ya está cerrado.
   reportarIncidente: (contratacionId: string, tipo: string, evidenciaDescripcion: string) =>
-    enviar<Incidente>("/soporte/incidentes", { contratacionId, tipo, evidenciaDescripcion }),
+    enviar<Incidente>("/bff/incidentes", { contratacionId, tipo, evidenciaDescripcion }),
 
   // --- Comunicación ---
   conversaciones: (filtros: { contactoId?: string; participanteId?: string } = {}) =>
     pedir<Pagina<Conversacion>>(`/comunicacion/conversaciones${query(filtros)}`),
   mensajes: (conversacionId: string) =>
-    pedir<Pagina<Mensaje>>(`/comunicacion/conversaciones/${conversacionId}/mensajes`),
+    pedir<Pagina<Mensaje>>(`/comunicacion/conversaciones/${conversacionId}/mensajes?size=200`),
   notificaciones: (usuarioId: string) =>
     pedir<Pagina<Notificacion>>(`/comunicacion/notificaciones${query({ usuarioId })}`),
   resumenNotificaciones: (usuarioId: string) =>
@@ -211,6 +274,7 @@ export const api = {
     pagos: Pagina<any> | null
     resenas: Pagina<Resena> | null
     incidentes: Pagina<Incidente> | null
+    ciclo: CicloContratacion
   }>(`/bff/contrataciones/${id}`),
   bffInicioDemandante: (id: string) => pedir<{
     perfil: PerfilDemandante

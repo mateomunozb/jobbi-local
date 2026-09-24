@@ -1,14 +1,14 @@
 """Contexto delimitado: Monetización.
 
 Dueño de pagos, suscripciones Pro, billeteras y movimientos, en la base
-`jobbi_monetizacion`. Conserva el worker SQS y los endpoints /cobros y /cobrar
-del simulador original, de modo que la prueba de carga k6 y el flujo Pub/Sub del
-README siguen funcionando igual.
+`jobbi_monetizacion`. Es el consumidor del evento CONTRATACION_COMPLETADA: el
+worker SQS (`sqs_worker.py`) cobra la comisión de cada servicio completado.
+Conserva los endpoints /cobros y /cobrar del simulador original.
 """
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -17,11 +17,18 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from common.db import condiciones, inicializar, nuevo_id, paginar_consulta
 from common.enums import MedioPago, PlanPrestador
-from common.service import crear_servicio
+from common.service import crear_servicio, resumen_latencias
 
-from .models import BilleteraPrestador, MovimientoBilletera, Pago, SuscripcionPro
-from .sqs_worker import COBROS_REGISTRADOS, iniciar_worker
-from .tablas import BilleteraPrestadorFila, MovimientoBilleteraFila, PagoFila, SuscripcionProFila
+from .billetera import UMBRAL_BLOQUEO, aplicar_comision
+from .models import BilleteraPrestador, EventoProcesado, MovimientoBilletera, Pago, SuscripcionPro
+from .sqs_worker import ESTADO, estado_colas, iniciar_worker
+from .tablas import (
+    BilleteraPrestadorFila,
+    EventoProcesadoFila,
+    MovimientoBilleteraFila,
+    PagoFila,
+    SuscripcionProFila,
+)
 
 app = crear_servicio(
     nombre="monetizacion",
@@ -45,11 +52,6 @@ PLANES = {
     PlanPrestador.PRO.value: {"porcentajeComision": 0.12, "valorMensual": 39900.0},
 }
 
-# Por encima de este saldo la billetera se bloquea: la comisión en efectivo la
-# cobra el prestador de su cliente y queda debiéndosela a la plataforma, así que
-# acumular deuda sin liquidar no puede ser gratis.
-UMBRAL_BLOQUEO = 150000.0
-
 
 def sesion() -> Session:
     with Sesion() as s:
@@ -59,31 +61,109 @@ def sesion() -> Session:
 @app.on_event("startup")
 def _arrancar_worker() -> None:
     global _worker_activo
-    _worker_activo = iniciar_worker()
+    _worker_activo = iniciar_worker(Sesion)
 
 
-# --- Integración Pub/Sub (compatibilidad con el simulador original) --------
-@app.get("/cobros", tags=["pub/sub"], summary="Cobros acumulados por el worker SQS")
-def listar_cobros():
-    return {"total": len(COBROS_REGISTRADOS), "cobros": COBROS_REGISTRADOS}
+# --- Integración Pub/Sub ---------------------------------------------------
+def _cobro_legado(fila: EventoProcesadoFila) -> dict:
+    """Forma de /cobros del simulador original, más el resultado del cobro."""
+    return {
+        "id": fila.eventoId,
+        "evento": fila.tipo,
+        "monto": fila.monto,
+        "servicio_id": fila.contratacionId or "N/A",
+        "tipo": fila.origen,
+        "resultado": fila.resultado,
+        "fecha": fila.fechaProcesado,
+        "latenciaMs": fila.latenciaMs,
+    }
 
 
-@app.get("/cobros/estado-worker", tags=["pub/sub"], summary="Estado del consumidor SQS")
-def estado_worker():
-    return {"workerActivo": _worker_activo, "cobrosProcesados": len(COBROS_REGISTRADOS)}
+@app.get("/cobros", tags=["pub/sub"], summary="Eventos procesados por el worker SQS")
+def listar_cobros(
+    limite: int = Query(50, ge=1, le=500, description="Cuántos de los más recientes devolver"),
+    s: Session = Depends(sesion),
+):
+    total = s.scalar(select(func.count()).select_from(EventoProcesadoFila)) or 0
+    filas = s.scalars(
+        select(EventoProcesadoFila).order_by(EventoProcesadoFila.fechaProcesado.desc()).limit(limite)
+    ).all()
+    return {"total": total, "cobros": [_cobro_legado(f) for f in filas]}
+
+
+@app.get("/cobros/estado-worker", tags=["pub/sub"],
+         summary="Estado del consumidor SQS y profundidad de las colas")
+def estado_worker(s: Session = Depends(sesion)):
+    por_resultado = dict(s.execute(
+        select(EventoProcesadoFila.resultado, func.count()).group_by(EventoProcesadoFila.resultado)
+    ).all())
+    latencias = list(s.scalars(
+        select(EventoProcesadoFila.latenciaMs)
+        # Solo eventos de contrataciones reales: los de la prueba de carga del
+        # broker no pasan por el outbox y medirían otra cosa.
+        .where(EventoProcesadoFila.latenciaMs.is_not(None),
+               EventoProcesadoFila.resultado.in_(("COMISION_COBRADA", "YA_COBRADA")))
+        .order_by(EventoProcesadoFila.fechaProcesado.desc())
+        .limit(200)
+    ).all())
+    return {
+        "workerActivo": _worker_activo,
+        "conectado": ESTADO["conectado"],
+        "hilos": ESTADO["hilos"],
+        # Totales persistidos (sobreviven a reinicios del Pod).
+        "cobrosProcesados": sum(por_resultado.values()),
+        "porResultado": por_resultado,
+        # Contadores de este proceso desde que arrancó.
+        "desdeArranque": {
+            "recibidos": ESTADO["recibidos"],
+            "procesados": ESTADO["procesados"],
+            "duplicadosDescartados": ESTADO["duplicados"],
+            "errores": ESTADO["errores"],
+        },
+        "latenciaExtremoAExtremoMs": resumen_latencias(latencias),
+        "ultimoMensajeEn": ESTADO["ultimoMensajeEn"],
+        "ultimoError": ESTADO["ultimoError"],
+        "colas": estado_colas() if _worker_activo else None,
+    }
+
+
+@app.get("/cobros/contratacion/{contratacion_id}", tags=["pub/sub"],
+         summary="¿Ya se cobró la comisión de esta contratación?")
+def cobro_de_contratacion(contratacion_id: str, s: Session = Depends(sesion)):
+    evento = s.scalars(select(EventoProcesadoFila).where(
+        EventoProcesadoFila.contratacionId == contratacion_id,
+    ).order_by(EventoProcesadoFila.fechaProcesado)).first()
+    movimiento = s.scalars(select(MovimientoBilleteraFila).where(
+        MovimientoBilleteraFila.contratacionId == contratacion_id,
+        MovimientoBilleteraFila.tipo == "COMISION",
+    )).first()
+    billetera = s.get(BilleteraPrestadorFila, movimiento.billeteraId) if movimiento else None
+    return {
+        "contratacionId": contratacion_id,
+        "cobrado": movimiento is not None,
+        "evento": EventoProcesado.model_validate(evento) if evento else None,
+        "movimiento": MovimientoBilletera.model_validate(movimiento) if movimiento else None,
+        "billetera": BilleteraPrestador.model_validate(billetera) if billetera else None,
+    }
 
 
 @app.post("/cobrar", tags=["pub/sub"], summary="Registrar un cobro de forma síncrona")
-def procesar_cobro_sincrono(servicio_id: str, monto: float, usuario_id: str):
-    registro = {
-        "id": f"COBRO-{len(COBROS_REGISTRADOS) + 1}",
-        "servicio_id": servicio_id,
-        "monto": monto,
-        "usuario_id": usuario_id,
-        "tipo": "SINCRONO",
-    }
-    COBROS_REGISTRADOS.append(registro)
-    return {"mensaje": "Cobro procesado exitosamente", "detalle": registro}
+def procesar_cobro_sincrono(servicio_id: str, monto: float, usuario_id: str,
+                            s: Session = Depends(sesion)):
+    fila = EventoProcesadoFila(
+        eventoId=nuevo_id(),
+        tipo="COBRO_SINCRONO",
+        contratacionId=servicio_id,
+        prestadorId=None,
+        monto=monto,
+        resultado="COBRO_SINCRONO",
+        origen="SINCRONO",
+        fechaProcesado=datetime.now(),
+    )
+    s.add(fila)
+    s.commit()
+    return {"mensaje": "Cobro procesado exitosamente",
+            "detalle": {**_cobro_legado(fila), "usuario_id": usuario_id}}
 
 
 # --- Planes y comisiones ---------------------------------------------------
@@ -103,66 +183,23 @@ class CobroComision(BaseModel):
     medioPago: MedioPago = MedioPago.EFECTIVO
 
 
-def _billetera_de(s: Session, prestador_id: str) -> BilleteraPrestadorFila:
-    """Devuelve la billetera del prestador, creándola en su primer movimiento.
-
-    No se abre en el registro: un prestador que nunca ha trabajado no tiene
-    nada que liquidar, y la base no guarda filas que no representen un hecho.
-    """
-    billetera = s.scalars(select(BilleteraPrestadorFila).where(
-        BilleteraPrestadorFila.prestadorId == prestador_id
-    )).first()
-    if billetera is None:
-        billetera = BilleteraPrestadorFila(
-            id=nuevo_id(), prestadorId=prestador_id, saldoPendiente=0.0, bloqueada=False,
-        )
-        s.add(billetera)
-        s.flush()
-    return billetera
-
-
 @app.post("/comisiones", tags=["billetera"], status_code=201,
           summary="Cargar a la billetera del prestador la comisión de una contratación")
 def cobrar_comision(peticion: CobroComision, s: Session = Depends(sesion)):
-    """El cobro del servicio pagado en efectivo.
+    """Cobro síncrono de la comisión de un servicio pagado en efectivo.
 
-    El dinero del servicio nunca pasa por la plataforma: lo recibe el prestador
-    de su cliente. Lo que queda es la comisión, que se le carga a su billetera
-    como saldo pendiente de liquidar. El monto llega ya calculado, con el
-    porcentaje que se congeló al cerrar el acuerdo.
+    El camino normal es asíncrono (evento CONTRATACION_COMPLETADA → worker SQS).
+    Este endpoint queda para cuando el sistema corre sin Pub/Sub; ambos usan la
+    misma regla (`billetera.aplicar_comision`), idempotente por contratación.
     """
-    billetera = _billetera_de(s, peticion.prestadorId)
-
-    # Idempotente por contratación: reintentar el check-out no cobra dos veces.
-    existente = s.scalars(select(MovimientoBilleteraFila).where(
-        MovimientoBilleteraFila.billeteraId == billetera.id,
-        MovimientoBilleteraFila.contratacionId == peticion.contratacionId,
-        MovimientoBilleteraFila.tipo == "COMISION",
-    )).first()
-    if existente:
-        return {
-            "billetera": BilleteraPrestador.model_validate(billetera),
-            "movimiento": MovimientoBilletera.model_validate(existente),
-            "yaCobrada": True,
-        }
-
-    movimiento = MovimientoBilleteraFila(
-        id=nuevo_id(),
-        billeteraId=billetera.id,
-        contratacionId=peticion.contratacionId,
-        tipo="COMISION",
-        # Negativo: es lo que el prestador le debe a la plataforma.
-        monto=-abs(peticion.monto),
-        fecha=date.today(),
+    billetera, movimiento, ya_cobrada = aplicar_comision(
+        s, peticion.prestadorId, peticion.contratacionId, peticion.monto,
     )
-    s.add(movimiento)
-    billetera.saldoPendiente = round(billetera.saldoPendiente + abs(peticion.monto), 2)
-    billetera.bloqueada = billetera.saldoPendiente > UMBRAL_BLOQUEO
     s.commit()
     return {
         "billetera": BilleteraPrestador.model_validate(billetera),
         "movimiento": MovimientoBilletera.model_validate(movimiento),
-        "yaCobrada": False,
+        "yaCobrada": ya_cobrada,
     }
 
 
