@@ -10,8 +10,10 @@
 #     que lleva una copia de este script en un ConfigMap.
 #   - Desde tu máquina, contra el port-forward: ./scripts/init-aws-local.sh
 #
-#   contratacion-completada-topic (SNS)
+#   contratacion-completada-topic (SNS)   Contrataciones → Monetización
 #        └──► monetizacion-events-queue (SQS)  ──5 fallos──► monetizacion-events-dlq
+#   billetera-bloqueada-topic (SNS)       Monetización → Comunicación
+#        └──► comunicacion-events-queue (SQS)  ──5 fallos──► comunicacion-events-dlq
 set -euo pipefail
 
 # La región va por variable: awslocal toma su primer argumento como el servicio.
@@ -23,41 +25,48 @@ else
   AWS="aws --endpoint-url=${ENDPOINT_URL:-http://localhost:4566}"
 fi
 
-TOPIC="contratacion-completada-topic"
-QUEUE="monetizacion-events-queue"
-DLQ="monetizacion-events-dlq"
+# aprovisionar TEMA COLA DLQ: tema SNS con una cola suscrita y su DLQ.
+aprovisionar() {
+  local topic="$1" queue="$2" dlq="$3"
 
-echo "=== Aprovisionando SNS/SQS de JOBBI ==="
+  local topic_arn
+  topic_arn=$($AWS sns create-topic --name "$topic" --query TopicArn --output text)
+  echo "  ✓ Tema SNS: $topic_arn"
 
-TOPIC_ARN=$($AWS sns create-topic --name "$TOPIC" --query TopicArn --output text)
-echo "  ✓ Tema SNS: $TOPIC_ARN"
+  local dlq_url dlq_arn
+  dlq_url=$($AWS sqs create-queue --queue-name "$dlq" --query QueueUrl --output text)
+  dlq_arn=$($AWS sqs get-queue-attributes --queue-url "$dlq_url" \
+    --attribute-names QueueArn --query Attributes.QueueArn --output text)
+  echo "  ✓ DLQ:       $dlq_arn"
 
-DLQ_URL=$($AWS sqs create-queue --queue-name "$DLQ" --query QueueUrl --output text)
-DLQ_ARN=$($AWS sqs get-queue-attributes --queue-url "$DLQ_URL" \
-  --attribute-names QueueArn --query Attributes.QueueArn --output text)
-echo "  ✓ DLQ:       $DLQ_ARN"
+  local queue_url queue_arn
+  queue_url=$($AWS sqs create-queue --queue-name "$queue" --query QueueUrl --output text)
+  queue_arn=$($AWS sqs get-queue-attributes --queue-url "$queue_url" \
+    --attribute-names QueueArn --query Attributes.QueueArn --output text)
 
-QUEUE_URL=$($AWS sqs create-queue --queue-name "$QUEUE" --query QueueUrl --output text)
-QUEUE_ARN=$($AWS sqs get-queue-attributes --queue-url "$QUEUE_URL" \
-  --attribute-names QueueArn --query Attributes.QueueArn --output text)
-
-# Un mensaje que falla 5 veces se aparta a la DLQ para no bloquear la cola.
-# VisibilityTimeout: lo que tarda en reaparecer un mensaje cuyo proceso falló.
-ATRIBUTOS=$(mktemp)
-cat > "$ATRIBUTOS" <<EOF
+  # Un mensaje que falla 5 veces se aparta a la DLQ para no bloquear la cola.
+  # VisibilityTimeout: lo que tarda en reaparecer un mensaje cuyo proceso falló.
+  local atributos
+  atributos=$(mktemp)
+  cat > "$atributos" <<JSON
 {
   "VisibilityTimeout": "30",
-  "RedrivePolicy": "{\"deadLetterTargetArn\":\"$DLQ_ARN\",\"maxReceiveCount\":\"5\"}"
+  "RedrivePolicy": "{\"deadLetterTargetArn\":\"$dlq_arn\",\"maxReceiveCount\":\"5\"}"
 }
-EOF
-$AWS sqs set-queue-attributes --queue-url "$QUEUE_URL" --attributes "file://$ATRIBUTOS"
-rm -f "$ATRIBUTOS"
-echo "  ✓ Cola SQS:  $QUEUE_ARN (DLQ tras 5 intentos)"
+JSON
+  $AWS sqs set-queue-attributes --queue-url "$queue_url" --attributes "file://$atributos"
+  rm -f "$atributos"
+  echo "  ✓ Cola SQS:  $queue_arn (DLQ tras 5 intentos)"
 
-# subscribe es idempotente: con el mismo tema, protocolo y endpoint devuelve la
-# suscripción existente.
-SUB_ARN=$($AWS sns subscribe --topic-arn "$TOPIC_ARN" --protocol sqs \
-  --notification-endpoint "$QUEUE_ARN" --query SubscriptionArn --output text)
-echo "  ✓ Suscripción tema → cola: $SUB_ARN"
+  # subscribe es idempotente: con el mismo tema, protocolo y endpoint devuelve la
+  # suscripción existente.
+  local sub_arn
+  sub_arn=$($AWS sns subscribe --topic-arn "$topic_arn" --protocol sqs \
+    --notification-endpoint "$queue_arn" --query SubscriptionArn --output text)
+  echo "  ✓ Suscripción tema → cola: $sub_arn"
+}
 
+echo "=== Aprovisionando SNS/SQS de JOBBI ==="
+aprovisionar contratacion-completada-topic monetizacion-events-queue monetizacion-events-dlq
+aprovisionar billetera-bloqueada-topic comunicacion-events-queue comunicacion-events-dlq
 echo "=== Mensajería lista ==="

@@ -21,6 +21,7 @@ Garantías:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -33,9 +34,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from common import eventos
 from common.enums import MedioPago
+from common.observabilidad import EVENTOS_CONSUMIDOS, LATENCIA_COBRO, evento_negocio, log, usar_trace_id
+from common.resiliencia import Backoff, es_error_de_base, esperar_base_disponible
 
-from .billetera import aplicar_comision
-from .tablas import EventoProcesadoFila
+from .billetera import aplicar_comision, registrar_pago_efectivo
+from .comisiones import estrategia_de_cobro
+from .repositorio import BandejaDeEntrada, RepositorioBilleteras
 
 HILOS = int(os.getenv("SQS_HILOS", "2"))
 
@@ -88,9 +92,34 @@ def _fecha(valor: Any) -> datetime | None:
     return fecha.astimezone().replace(tzinfo=None) if fecha.tzinfo else fecha
 
 
+def _monto_comision(evento: dict[str, Any]) -> float:
+    """Comisión a cobrar, calculada con la estrategia que corresponde al evento.
+
+    Sin valor acordado ni estrategia (eventos de productores antiguos o de la
+    prueba de carga) se cobra el monto que trae el evento, como antes.
+    """
+    estrategia = estrategia_de_cobro(evento)
+    valor = evento.get("valorAcordado")
+    if estrategia is not None and valor is not None:
+        return estrategia.calcular(float(valor))
+    return float(evento.get("montoComision", evento.get("monto", 0.0)))
+
+
 def procesar_mensaje(sesiones: sessionmaker[Session], cuerpo_sqs: str, mensaje_sqs_id: str) -> str:
     """Procesa un mensaje y devuelve el resultado. Lanza si hay que reintentarlo."""
     evento, sns_id = _desenvolver(cuerpo_sqs)
+    # Retoma la traza del check-out que originó el evento.
+    usar_trace_id(evento.get("traceId"))
+    resultado = _procesar(sesiones, evento, sns_id, mensaje_sqs_id)
+    EVENTOS_CONSUMIDOS.labels("monetizacion", resultado).inc()
+    if resultado == "DUPLICADO":
+        evento_negocio("evento_duplicado", "Evento ya procesado: se descarta sin cobrar",
+                       eventoId=evento.get("eventoId") or sns_id, contratacionId=evento.get("contratacionId"))
+    return resultado
+
+
+def _procesar(sesiones: sessionmaker[Session], evento: dict[str, Any], sns_id: str | None,
+              mensaje_sqs_id: str) -> str:
     # El eventoId lo pone el outbox. Los mensajes publicados a mano o por k6
     # contra SNS no lo traen: para esos, el MessageId de SNS es igual de único.
     evento_id = str(evento.get("eventoId") or sns_id or mensaje_sqs_id)
@@ -99,15 +128,23 @@ def procesar_mensaje(sesiones: sessionmaker[Session], cuerpo_sqs: str, mensaje_s
     prestador_id = evento.get("prestadorId")
     ocurrido = _fecha(evento.get("ocurridoEn") or evento.get("timestamp"))
 
+    bloqueo = None
+    # Unidad de trabajo: bandeja de entrada, cargo, pago y evento del outbox se
+    # confirman en una sola transacción, o ninguno.
     with sesiones() as s:
-        if s.get(EventoProcesadoFila, evento_id) is not None:
+        bandeja, billeteras = BandejaDeEntrada(s), RepositorioBilleteras(s)
+        if bandeja.ya_procesado(evento_id):
             return "DUPLICADO"
 
         if tipo == eventos.CONTRATACION_COMPLETADA and contratacion_id and prestador_id:
-            monto = float(evento.get("montoComision", evento.get("monto", 0.0)))
+            monto = _monto_comision(evento)
             if evento.get("medioPago", MedioPago.EFECTIVO.value) == MedioPago.EFECTIVO.value:
-                _, _, ya_cobrada = aplicar_comision(s, prestador_id, contratacion_id, monto)
-                resultado = "YA_COBRADA" if ya_cobrada else "COMISION_COBRADA"
+                cobro = aplicar_comision(billeteras, prestador_id, contratacion_id, monto)
+                bloqueo = cobro.bloqueo
+                if evento.get("valorAcordado") is not None:
+                    registrar_pago_efectivo(billeteras, contratacion_id, float(evento["valorAcordado"]),
+                                            (ocurrido or datetime.now()).date())
+                resultado = "YA_COBRADA" if cobro.yaCobrada else "COMISION_COBRADA"
             else:
                 # Con pago por plataforma la comisión se retiene del pago, que
                 # aún no está implementado: se registra el evento sin cobrar.
@@ -120,25 +157,29 @@ def procesar_mensaje(sesiones: sessionmaker[Session], cuerpo_sqs: str, mensaje_s
             resultado = "REGISTRADO_SIN_CONTRATACION"
 
         ahora = datetime.now()
-        s.add(EventoProcesadoFila(
-            eventoId=evento_id,
-            tipo=tipo,
-            contratacionId=str(contratacion_id) if contratacion_id else None,
-            prestadorId=prestador_id,
-            monto=monto,
-            resultado=resultado,
-            origen="ASINCRONO_SQS",
-            mensajeSqsId=mensaje_sqs_id,
-            ocurridoEn=ocurrido,
-            fechaProcesado=ahora,
-            latenciaMs=(ahora - ocurrido).total_seconds() * 1000 if ocurrido else None,
-        ))
+        bandeja.registrar(
+            evento_id=evento_id, tipo=tipo,
+            contratacion_id=str(contratacion_id) if contratacion_id else None,
+            prestador_id=prestador_id, monto=monto, resultado=resultado,
+            mensaje_sqs_id=mensaje_sqs_id, ocurrido=ocurrido, procesado=ahora,
+        )
         try:
             s.commit()
         except IntegrityError:
             # Otro hilo procesó el mismo evento a la vez y ganó: es un duplicado.
             s.rollback()
             return "DUPLICADO"
+
+    # Los hechos de negocio se registran después del commit: solo lo que quedó.
+    if resultado == "COMISION_COBRADA":
+        evento_negocio("comision_aplicada", "Comisión cargada a la billetera del prestador",
+                       contratacionId=contratacion_id, prestadorId=prestador_id, monto=monto,
+                       latenciaMs=round((ahora - ocurrido).total_seconds() * 1000, 1) if ocurrido else None)
+        if ocurrido:
+            LATENCIA_COBRO.observe(max((ahora - ocurrido).total_seconds(), 0))
+    if bloqueo:
+        evento_negocio("billetera_bloqueada", "La billetera alcanzó el umbral y quedó bloqueada",
+                       logging.WARNING, **bloqueo)
     return resultado
 
 
@@ -172,12 +213,15 @@ def estado_colas() -> dict[str, Any]:
 
 def _bucle(sesiones: sessionmaker[Session]) -> None:
     sqs = eventos.cliente("sqs")
+    backoff_sqs = Backoff(maximo=30.0)
     while True:
+        base_caida = False
         try:
             url = _url_de(sqs, eventos.QUEUE_NAME)
             if not ESTADO["conectado"]:
-                print(f"[SQS Worker] Conectado a {url}", flush=True)
+                log.info("sqs_conectado", extra={"cola": url})
             ESTADO["conectado"] = True
+            backoff_sqs.reiniciar()
 
             # Long polling: la llamada espera hasta 10 s a que haya mensajes, en
             # vez de preguntar en vacío varias veces por segundo.
@@ -193,7 +237,17 @@ def _bucle(sesiones: sessionmaker[Session]) -> None:
                     # No se borra: SQS lo reintentará y, si insiste, irá a la DLQ.
                     _contar("errores")
                     ESTADO["ultimoError"] = f"{type(e).__name__}: {e}"
-                    print(f"[SQS Worker] Error, el mensaje se reintentará: {e}", flush=True)
+                    EVENTOS_CONSUMIDOS.labels("monetizacion", "ERROR").inc()
+                    base_caida = es_error_de_base(e)
+                    log.error("cobro_fallido", extra={
+                        "business_event": "cobro_fallido", "mensajeSqsId": mensaje["MessageId"],
+                        "error": ESTADO["ultimoError"],
+                        "accion": "pausa con backoff hasta que vuelva la base" if base_caida
+                                  else "SQS lo reentregará (DLQ tras 5)"})
+                    if base_caida:
+                        # El resto del lote fallaría igual: se deja sin tocar y
+                        # SQS lo devolverá a la cola al vencer su visibilidad.
+                        break
                     continue
                 _contar("duplicados" if resultado == "DUPLICADO" else "procesados", resultado)
                 ESTADO["ultimoMensajeEn"] = datetime.now()
@@ -202,20 +256,27 @@ def _bucle(sesiones: sessionmaker[Session]) -> None:
             if listos:
                 sqs.delete_message_batch(QueueUrl=url, Entries=listos)
         except Exception as e:  # noqa: BLE001 — LocalStack caído o reiniciado
-            if ESTADO["conectado"]:
-                print(f"[SQS Worker] Se perdió la conexión con SQS: {e}", flush=True)
-            else:
-                print(f"[SQS Worker] Esperando la cola en {eventos.AWS_ENDPOINT_URL}: {e}", flush=True)
+            espera = backoff_sqs.siguiente()
+            log.warning("sqs_no_disponible" if ESTADO["conectado"] else "sqs_esperando_cola",
+                        extra={"endpoint": eventos.AWS_ENDPOINT_URL, "error": str(e),
+                               "reintentoEnSegundos": round(espera, 1)})
             ESTADO["conectado"] = False
             ESTADO["ultimoError"] = str(e)
             _urls.clear()
-            time.sleep(3)
+            time.sleep(espera)
+            continue
+
+        if base_caida:
+            # Con la base caída no se reciben más mensajes: cada recepción
+            # sumaría un intento en SQS y, tras 5, una comisión válida acabaría
+            # en la DLQ. Se espera con backoff exponencial a que vuelva.
+            esperar_base_disponible(sesiones, "sqs-worker-monetizacion")
 
 
 def iniciar_worker(sesiones: sessionmaker[Session]) -> bool:
     """Arranca los hilos consumidores. Devuelve si quedaron activos."""
     if not eventos.activado("SQS_ENABLED"):
-        print("[SQS Worker] Deshabilitado por SQS_ENABLED=false", flush=True)
+        log.warning("sqs_worker_deshabilitado", extra={"motivo": "SQS_ENABLED=false"})
         return False
     for i in range(HILOS):
         threading.Thread(target=_bucle, args=(sesiones,), name=f"sqs-worker-{i}", daemon=True).start()

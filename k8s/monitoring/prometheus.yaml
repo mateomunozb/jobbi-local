@@ -1,0 +1,108 @@
+# Prometheus: recolecta y guarda las series de tiempo.
+#
+# Descubre por sí solo (kubernetes_sd) los Pods de aws-local anotados con
+# prometheus.io/scrape, lee cAdvisor a través del kubelet (CPU, memoria y red por
+# contenedor) y a kube-state-metrics (límites, reinicios, OOMKilled). Por eso
+# necesita permisos de lectura sobre el clúster.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jobbi-prometheus
+rules:
+- apiGroups: [""]
+  resources: [nodes, nodes/proxy, nodes/metrics, services, endpoints, pods]
+  verbs: [get, list, watch]
+- nonResourceURLs: [/metrics, /metrics/cadvisor]
+  verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jobbi-prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jobbi-prometheus
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: monitoring
+---
+# Las series sobreviven a reinicios del Pod: la evidencia de las pruebas de
+# carga y de los fallos no se pierde si Prometheus se reinicia.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-datos
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels: { app: prometheus }
+spec:
+  replicas: 1
+  # Un solo Pod puede tener el volumen: el nuevo espera a que el viejo lo suelte.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: prometheus }
+  template:
+    metadata:
+      labels: { app: prometheus }
+    spec:
+      serviceAccountName: prometheus
+      securityContext: { fsGroup: 65534, runAsUser: 65534, runAsNonRoot: true }
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.54.1
+        args:
+        - --config.file=/etc/prometheus/prometheus.yml
+        - --storage.tsdb.path=/prometheus
+        # Dos días alcanzan para la prueba de resistencia (1-2 h) y el informe.
+        - --storage.tsdb.retention.time=2d
+        - --web.enable-lifecycle
+        # Permite vaciar las series entre pruebas (reiniciar-entorno.sh --metricas).
+        # Solo en este entorno local: en producción la API de administración no se expone.
+        - --web.enable-admin-api
+        ports: [{ containerPort: 9090, name: http }]
+        readinessProbe:
+          httpGet: { path: /-/ready, port: 9090 }
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /-/healthy, port: 9090 }
+          initialDelaySeconds: 30
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "100m", memory: "192Mi" }
+          limits: { cpu: "500m", memory: "640Mi" }
+        volumeMounts:
+        - { name: config, mountPath: /etc/prometheus }
+        - { name: datos, mountPath: /prometheus }
+      volumes:
+      - name: config
+        configMap: { name: prometheus-config }
+      - name: datos
+        persistentVolumeClaim: { claimName: prometheus-datos }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  type: ClusterIP
+  selector: { app: prometheus }
+  ports: [{ name: http, port: 9090, targetPort: 9090 }]

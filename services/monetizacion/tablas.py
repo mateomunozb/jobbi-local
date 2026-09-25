@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, String
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.db import Base
@@ -72,11 +72,36 @@ class EventoProcesadoFila(Base):
     prestadorId: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     monto: Mapped[float] = mapped_column(Float, default=0.0)
     # COMISION_COBRADA | YA_COBRADA | SIN_COBRO_MEDIO_PLATAFORMA |
-    # REGISTRADO_SIN_CONTRATACION | COBRO_SINCRONO
+    # REGISTRADO_SIN_CONTRATACION (y COBRO_SINCRONO en registros históricos)
     resultado: Mapped[str] = mapped_column(String(40), index=True)
-    origen: Mapped[str] = mapped_column(String(20))  # ASINCRONO_SQS | SINCRONO
+    origen: Mapped[str] = mapped_column(String(20))  # ASINCRONO_SQS (SINCRONO solo en registros históricos)
     mensajeSqsId: Mapped[str | None] = mapped_column(String(100), nullable=True)
     ocurridoEn: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     fechaProcesado: Mapped[datetime] = mapped_column(DateTime, index=True)
     # Desde que ocurrió el hecho (check-out) hasta que quedó cobrado.
     latenciaMs: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class EventoOutboxMonetizacionFila(Base):
+    """Bandeja de salida de Monetización (Transactional Outbox).
+
+    El evento BILLETERA_BLOQUEADA se escribe aquí en la misma transacción que
+    el cargo que hizo cruzar el umbral: no hay billetera bloqueada sin su aviso,
+    ni aviso de un bloqueo que no se guardó. `common/outbox.py` lo publica.
+
+    Nombre propio de tabla porque todas las tablas comparten metadatos y
+    Contrataciones ya usa `outbox_eventos`.
+    """
+
+    __tablename__ = "outbox_monetizacion"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(60), index=True)
+    agregadoId: Mapped[str] = mapped_column(String(36), index=True)
+    payload: Mapped[str] = mapped_column(Text)
+    estado: Mapped[str] = mapped_column(String(20), index=True)  # PENDIENTE | PUBLICADO
+    intentos: Mapped[int] = mapped_column(Integer, default=0)
+    ultimoError: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fechaCreacion: Mapped[datetime] = mapped_column(DateTime, index=True)
+    fechaPublicacion: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    mensajeSnsId: Mapped[str | None] = mapped_column(String(100), nullable=True)

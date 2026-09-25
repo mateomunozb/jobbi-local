@@ -26,3 +26,6 @@ __pycache__/
 
 # Resúmenes de las pruebas de carga k6
 tests/k6/resultados/
+
+# Bitácoras de los experimentos de fallos (scripts/caos)
+tests/caos/resultados/

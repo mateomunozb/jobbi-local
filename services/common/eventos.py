@@ -12,12 +12,17 @@ de modo que la misma imagen apunta a LocalStack dentro del clúster, a
 
 from __future__ import annotations
 
+import json
 import os
+from typing import Any
 
 import boto3
 from botocore.config import Config
 
 CONTRATACION_COMPLETADA = "CONTRATACION_COMPLETADA"
+# Monetización → Comunicación: la billetera de un prestador acaba de cruzar el
+# umbral de saldo pendiente (RN-04) y hay que avisarle.
+BILLETERA_BLOQUEADA = "BILLETERA_BLOQUEADA"
 
 AWS_ENDPOINT_URL = os.getenv(
     "AWS_ENDPOINT_URL", "http://localstack.aws-local.svc.cluster.local:4566"
@@ -28,9 +33,24 @@ TOPIC_NAME = os.getenv("SNS_TOPIC_NAME", "contratacion-completada-topic")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "monetizacion-events-queue")
 DLQ_NAME = os.getenv("QUEUE_DLQ_NAME", "monetizacion-events-dlq")
 
+TOPIC_BILLETERA_BLOQUEADA = os.getenv("SNS_TOPIC_BILLETERA_BLOQUEADA", "billetera-bloqueada-topic")
+QUEUE_COMUNICACION = os.getenv("QUEUE_COMUNICACION", "comunicacion-events-queue")
+DLQ_COMUNICACION = os.getenv("QUEUE_COMUNICACION_DLQ", "comunicacion-events-dlq")
+
 
 def activado(variable: str, por_defecto: str = "true") -> bool:
     return os.getenv(variable, por_defecto).lower() in ("1", "true", "yes")
+
+
+def desenvolver_sns(cuerpo_sqs: str) -> tuple[dict[str, Any], str | None]:
+    """Devuelve (evento, MessageId de SNS). SNS envuelve el mensaje en 'Message'."""
+    cuerpo = json.loads(cuerpo_sqs)
+    if isinstance(cuerpo, dict) and "Message" in cuerpo and "TopicArn" in cuerpo:
+        try:
+            return json.loads(cuerpo["Message"]), cuerpo.get("MessageId")
+        except (TypeError, ValueError):
+            return {"crudo": cuerpo["Message"]}, cuerpo.get("MessageId")
+    return cuerpo, None
 
 
 def cliente(servicio: str):

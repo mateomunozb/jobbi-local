@@ -581,10 +581,10 @@ El catálogo completo de endpoints está en [`services/README.md`](services/READ
 
 #### Opción B — Local, sin Kubernetes (para desarrollar)
 
-Levanta los diez procesos en tu máquina y crea el entorno virtual la primera
-vez. Si Docker está disponible, también levanta LocalStack en un contenedor, así
-que el Pub/Sub funciona igual que en el clúster. Con `PUBSUB=0`, o sin Docker,
-el gateway cobra de forma síncrona:
+Levanta los procesos en tu máquina y crea el entorno virtual la primera vez.
+También levanta LocalStack en un contenedor, así que el Pub/Sub funciona igual
+que en el clúster. **Docker es obligatorio**: el cobro de comisiones solo existe
+por eventos, no hay modo síncrono:
 
 ```bash
 ./scripts/run-backend-local.sh
@@ -721,8 +721,6 @@ Detalle y prueba desde el frontend en [docs/pubsub.md](docs/pubsub.md).
 │   ├── Dockerfile                    # Imagen única; SERVICE_MODULE elige el contexto
 │   ├── requirements.txt              # fastapi, uvicorn, pydantic, httpx, boto3
 │   └── README.md                     # Mapa de contextos y catálogo de endpoints
-├── simulators/
-│   └── monetizacion/                 # Simulador original (superado por services/monetizacion)
 ├── frontend/                         # Aplicación JOBBI (Next.js 16 + React 19)
 │   ├── app/                          # App Router (layout, page, estilos globales)
 │   ├── app/api/[...ruta]/route.ts    # Proxy del navegador hacia el API Gateway
@@ -753,11 +751,10 @@ Detalle y prueba desde el frontend en [docs/pubsub.md](docs/pubsub.md).
 > contextos usan las rutas `/api/bff/*`, de modo que el navegador hace una sola petición
 > en lugar de conocer la topología interna.
 
-> **Nota sobre `simulators/monetizacion`:** se conserva como referencia histórica. El
-> contexto de Monetización ahora vive en `services/monetizacion/`, que mantiene el mismo
-> worker SQS y los mismos endpoints `/cobros` y `/cobrar`, y añade las consultas de pagos,
-> suscripciones y billetera. El `Service` de Kubernetes conserva su nombre y puerto
-> (`servicio-monetizacion:8000`), así que la prueba de carga k6 sigue siendo válida.
+> **Monetización** vive en `services/monetizacion/` (el simulador original se eliminó). El
+> `Service` de Kubernetes conserva su nombre y puerto (`servicio-monetizacion:8000`), así
+> que las pruebas k6 siguen siendo válidas. No expone ningún endpoint de cobro: la
+> comisión se carga solo al consumir el evento.
 
 ## 🧪 Pruebas de Carga y Estrés (k6)
 

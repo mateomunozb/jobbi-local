@@ -22,11 +22,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
 from common.db import condiciones, inicializar, nuevo_id, paginar_consulta
+from common import eventos
+from common.observabilidad import muestras_de_colas, registrar_metricas
 from common.service import crear_servicio
 
 from .models import Conversacion, Mensaje, Notificacion
 from .salas import salas
-from .tablas import ConversacionFila, MensajeFila, NotificacionFila
+from .sqs_worker import ESTADO, iniciar_worker
+from .tablas import ConversacionFila, EventoRecibidoFila, MensajeFila, NotificacionFila
 
 app = crear_servicio(
     nombre="comunicacion",
@@ -44,6 +47,24 @@ Sesion: sessionmaker[Session] = inicializar("comunicacion")
 def sesion() -> Session:
     with Sesion() as s:
         yield s
+
+
+@app.on_event("startup")
+def _arrancar_worker() -> None:
+    # Consumidor de BILLETERA_BLOQUEADA (ver sqs_worker.py).
+    if iniciar_worker(Sesion):
+        registrar_metricas(lambda: muestras_de_colas({
+            "principal": eventos.QUEUE_COMUNICACION, "dlq": eventos.DLQ_COMUNICACION}))
+
+
+@app.get("/eventos/estado-worker", tags=["pub/sub"],
+         summary="Estado del consumidor SQS de Comunicación")
+def estado_worker(s: Session = Depends(sesion)):
+    por_resultado = dict(s.execute(
+        select(EventoRecibidoFila.resultado, func.count()).group_by(EventoRecibidoFila.resultado)
+    ).all())
+    # Los contadores son de este proceso; porResultado sobrevive a reinicios.
+    return {**ESTADO, "porResultado": por_resultado}
 
 
 # --- Escrituras ------------------------------------------------------------

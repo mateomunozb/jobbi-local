@@ -1,7 +1,11 @@
 """Registro y autenticación simplificada.
 
-**Decisión explícita de alcance:** la verificación de identidad contra Truora se
-da por aprobada siempre, y el login reconoce al usuario únicamente por su
+**Verificación del prestador:** nace PENDIENTE y sin insignia. El veredicto lo
+decide Confianza con el aliado de verificación (a través del gateway, al
+registrarse) y se lo comunica a este contexto por
+`POST /prestadores/{id}/verificacion` (RN-01).
+
+**Decisión explícita de alcance:** el login reconoce al usuario únicamente por su
 correo, sin contraseña ni token. Es lo que se pidió para no bloquear el avance
 del resto del sistema; no es un esquema de autenticación real y no debe salir
 de este entorno de demostración.
@@ -67,8 +71,7 @@ class SesionResponse(BaseModel):
     rol: str
     perfilDemandante: PerfilDemandante | None = None
     perfilPrestador: PerfilPrestador | None = None
-    # Siempre True en esta fase; se conserva como campo para que la pantalla ya
-    # dependa del dato y no de una constante escrita en el cliente.
+    # Para un prestador, si ya tiene la insignia (RN-01); un demandante no se verifica.
     verificado: bool = True
 
 
@@ -85,7 +88,7 @@ def _sesion_de(s: Session, usuario: Usuario) -> SesionResponse:
         rol="Prestador" if prestador else "Demandante",
         perfilDemandante=demandante,
         perfilPrestador=prestador,
-        verificado=True,
+        verificado=prestador.insigniaVerificado if prestador else True,
     )
 
 
@@ -126,9 +129,9 @@ def registrar(peticion: RegistroRequest, s: Session = Depends(sesion_db)) -> Ses
             descripcion=peticion.descripcion or "",
             portafolioUrl="",
             tarifaReferencialBase=peticion.tarifaReferencialBase or 0,
-            # Verificación dada por aprobada: ver la nota de alcance del módulo.
-            insigniaVerificado=True,
-            estadoVerificacionActual=EstadoVerificacion.APROBADA,
+            # Sin insignia hasta que el aliado de verificación lo apruebe (RN-01).
+            insigniaVerificado=False,
+            estadoVerificacionActual=EstadoVerificacion.PENDIENTE,
             planActual=PlanPrestador.FREE,
             # Nace sin reputación: la construye con reseñas reales.
             calificacionPromedio=0,

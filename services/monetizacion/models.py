@@ -51,3 +51,16 @@ class EventoProcesado(Esquema):
     ocurridoEn: datetime | None = None
     fechaProcesado: datetime
     latenciaMs: float | None = None
+
+
+class EventoOutboxMonetizacion(Esquema):
+    id: str
+    tipo: str
+    agregadoId: str
+    payload: str
+    estado: str
+    intentos: int
+    ultimoError: str | None = None
+    fechaCreacion: datetime
+    fechaPublicacion: datetime | None = None
+    mensajeSnsId: str | None = None

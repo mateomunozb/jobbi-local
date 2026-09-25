@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import Any
 
 import httpx
@@ -26,6 +25,8 @@ import websockets
 from fastapi import HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse
 
+from common import eventos
+from common.observabilidad import cabeceras_de_traza, log, muestras_de_colas, registrar_metricas
 from common.service import crear_servicio
 
 from .registro import SERVICIOS
@@ -50,17 +51,28 @@ TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 LIMITES = httpx.Limits(max_connections=400, max_keepalive_connections=400, keepalive_expiry=4.0)
 _cliente: httpx.AsyncClient | None = None
 
-# Con Pub/Sub (el modo normal) el check-out no cobra: Contrataciones publica
-# CONTRATACION_COMPLETADA y Monetización cobra al consumirlo. Sin LocalStack
-# (backend local sin PUBSUB=1) no hay quien entregue el evento, así que el
-# gateway vuelve al cobro síncrono para que la comisión no se pierda.
-COBRO_VIA_EVENTOS = os.getenv("COBRO_VIA_EVENTOS", "true").lower() in ("1", "true", "yes")
+# El cobro de comisiones es siempre asíncrono (ADR-002): el check-out no cobra,
+# Contrataciones publica CONTRATACION_COMPLETADA y Monetización cobra al
+# consumirlo. No existe un camino síncrono alternativo que se salte el outbox.
+
+# Profundidad de todas las colas SQS. Cada consumidor ya exporta las suyas, pero
+# si su Pod muere (Fallo 2) la serie se corta justo cuando la cola se llena; el
+# gateway no depende de ellos y la sigue midiendo.
+registrar_metricas(lambda: muestras_de_colas({
+    "monetizacion": eventos.QUEUE_NAME, "monetizacion-dlq": eventos.DLQ_NAME,
+    "comunicacion": eventos.QUEUE_COMUNICACION, "comunicacion-dlq": eventos.DLQ_COMUNICACION}))
 
 
 @app.on_event("startup")
 async def _abrir_cliente() -> None:
     global _cliente
-    _cliente = httpx.AsyncClient(timeout=TIMEOUT, limits=LIMITES)
+    _cliente = httpx.AsyncClient(timeout=TIMEOUT, limits=LIMITES,
+                                 event_hooks={"request": [_propagar_traza]})
+
+
+async def _propagar_traza(peticion: httpx.Request) -> None:
+    # Cada servicio registra sus logs con el mismo traceId que el gateway.
+    peticion.headers.update(cabeceras_de_traza())
 
 
 @app.on_event("shutdown")
@@ -75,7 +87,8 @@ async def _pedir(servicio: str, ruta: str, params: dict | None = None) -> Any:
     try:
         respuesta = await _cliente.get(f"{base}{ruta}", params=params)
     except httpx.HTTPError as e:
-        print(f"[gateway] GET {servicio}{ruta} falló: {type(e).__name__}: {e}", flush=True)
+        log.warning("servicio_no_responde", extra={
+            "destino": servicio, "method": "GET", "route": ruta, "error": f"{type(e).__name__}: {e}"})
         return None
     if respuesta.status_code >= 400:
         return None
@@ -92,6 +105,26 @@ async def _enviar(servicio: str, ruta: str, cuerpo: dict) -> JSONResponse:
     return JSONResponse(status_code=respuesta.status_code, content=respuesta.json())
 
 
+async def _escribir(servicio: str, ruta: str, cuerpo: dict) -> dict:
+    """POST al servicio dueño; traduce su fallo en el código correcto para el cliente.
+
+    Un 4xx del servicio es una regla de negocio (409 con su detalle); un 5xx o
+    la falta de respuesta es indisponibilidad (503, reintentable). Mezclarlos
+    haría que una base caída pareciera un error del usuario.
+    """
+    base = SERVICIOS[servicio]["url"]
+    try:
+        respuesta = await _cliente.post(f"{base}{ruta}", json=cuerpo)
+    except httpx.HTTPError as e:
+        raise HTTPException(503, f"El servicio '{servicio}' no está disponible") from e
+    if respuesta.status_code >= 500:
+        raise HTTPException(503, f"El servicio '{servicio}' no está disponible en este momento")
+    if respuesta.status_code >= 400:
+        detalle = respuesta.json().get("detail") if "json" in respuesta.headers.get("content-type", "") else None
+        raise HTTPException(409, detalle or f"'{servicio}' rechazó la operación")
+    return respuesta.json()
+
+
 async def _enviar_json(servicio: str, ruta: str, cuerpo: dict) -> Any:
     """Como `_enviar`, pero devuelve el cuerpo ya decodificado, o None si falla.
 
@@ -102,7 +135,8 @@ async def _enviar_json(servicio: str, ruta: str, cuerpo: dict) -> Any:
     try:
         respuesta = await _cliente.post(f"{base}{ruta}", json=cuerpo)
     except httpx.HTTPError as e:
-        print(f"[gateway] POST {servicio}{ruta} falló: {type(e).__name__}: {e}", flush=True)
+        log.warning("servicio_no_responde", extra={
+            "destino": servicio, "method": "POST", "route": ruta, "error": f"{type(e).__name__}: {e}"})
         return None
     if respuesta.status_code >= 400:
         return None
@@ -113,12 +147,47 @@ async def _enviar_json(servicio: str, ruta: str, cuerpo: dict) -> Any:
 @app.post("/api/auth/registro", tags=["auth"], status_code=201,
           summary="Registrar un usuario y activar su perfil")
 async def registro(cuerpo: dict):
-    return await _enviar("identidad", "/auth/registro", cuerpo)
+    """Crea la cuenta y, si es prestador, lo verifica con el aliado (RN-01).
+
+    El prestador nace PENDIENTE. Confianza consulta al aliado a través del
+    Circuit Breaker: si responde, queda APROBADA o RECHAZADA al instante; si
+    está caído, el registro termina igual (PENDIENTE) y Confianza lo reintenta
+    en segundo plano.
+    """
+    respuesta = await _enviar("identidad", "/auth/registro", cuerpo)
+    if respuesta.status_code != 201:
+        return respuesta
+    sesion = json.loads(respuesta.body)
+    if sesion.get("perfilPrestador"):
+        sesion = await _verificar_prestador(sesion, cuerpo.get("numeroDocumento"))
+    return JSONResponse(status_code=201, content=sesion)
 
 
 @app.post("/api/auth/login", tags=["auth"], summary="Iniciar sesión solo con el correo")
 async def login(cuerpo: dict):
-    return await _enviar("identidad", "/auth/login", cuerpo)
+    respuesta = await _enviar("identidad", "/auth/login", cuerpo)
+    if respuesta.status_code != 200:
+        return respuesta
+    sesion = json.loads(respuesta.body)
+    # Un prestador que sigue PENDIENTE (p. ej. Confianza no respondió al
+    # registrarse) aprovecha el login para volver a pedir su verificación.
+    if (sesion.get("perfilPrestador") or {}).get("estadoVerificacionActual") == "PENDIENTE":
+        sesion = await _verificar_prestador(sesion, (sesion.get("usuario") or {}).get("numeroDocumento"))
+    return JSONResponse(status_code=200, content=sesion)
+
+
+async def _verificar_prestador(sesion: dict, documento: str | None) -> dict:
+    """Pide la verificación a Confianza y devuelve la sesión con el perfil actualizado."""
+    prestador_id = sesion["perfilPrestador"]["id"]
+    resultado = await _enviar_json("confianza", f"/prestadores/{prestador_id}/verificacion",
+                                   {"documento": documento})
+    if resultado is None:
+        log.warning("verificacion_no_solicitada", extra={"prestadorId": prestador_id})
+        return sesion
+    perfil = await _pedir("identidad", f"/prestadores/{prestador_id}")
+    if perfil is None:
+        return sesion
+    return {**sesion, "perfilPrestador": perfil, "verificado": perfil["insigniaVerificado"]}
 
 
 # --- Observabilidad --------------------------------------------------------
@@ -309,7 +378,9 @@ async def bff_catalogo(
     calificacionMinima: float | None = Query(None, ge=0, le=5),
     municipio: str | None = Query(None),
 ):
-    filtros_prestador = {"orden": "calificacion", "size": 20}
+    # RN-01: la búsqueda solo muestra prestadores verificados (APROBADA); los
+    # PENDIENTE y RECHAZADOS no aparecen.
+    filtros_prestador = {"orden": "calificacion", "size": 20, "estadoVerificacion": "APROBADA"}
     if calificacionMinima is not None:
         filtros_prestador["calificacionMinima"] = calificacionMinima
     if municipio:
@@ -354,6 +425,43 @@ async def bff_catalogo(
         "oficios": oficios,
         "prestadores": {**(prestadores or {}), "items": items, "total": len(items)},
     }
+
+
+@app.post("/api/bff/busquedas", tags=["bff"], status_code=201,
+          summary="Buscar prestadores y registrar la búsqueda (origen del match rate)")
+async def bff_buscar(cuerpo: dict):
+    """El catálogo, más la constancia de que el demandante buscó.
+
+    La búsqueda se registra en Mercado con los filtros y la ubicación del
+    demandante; su id vuelve con los resultados para que el contacto que salga
+    de ellos la cite (`busquedaOrigenId`). Si Mercado no puede registrarla, los
+    resultados se devuelven igual: la métrica no puede tumbar la búsqueda.
+    """
+    demandante_id = cuerpo.get("demandanteId")
+    if not demandante_id:
+        raise HTTPException(422, "Se requiere 'demandanteId'")
+    perfil = await _pedir("identidad", f"/demandantes/{demandante_id}")
+    if perfil is None:
+        raise HTTPException(404, f"Demandante '{demandante_id}' no encontrado")
+
+    ubicacion = perfil.get("ubicacionPrincipal") or {}
+    categoria_id = cuerpo.get("categoriaId")
+    calificacion = cuerpo.get("calificacionMinima")
+    municipio = cuerpo.get("municipio")
+    busqueda, catalogo = await asyncio.gather(
+        _enviar_json("mercado", "/busquedas", {
+            "demandanteId": demandante_id,
+            "categoriaId": categoria_id,
+            "calificacionMinima": calificacion,
+            "municipio": municipio or ubicacion.get("municipio") or "Medellín",
+            "comuna": ubicacion.get("comuna"),
+            "barrio": ubicacion.get("barrio"),
+            "latitud": ubicacion.get("latitud"),
+            "longitud": ubicacion.get("longitud"),
+        }),
+        bff_catalogo(categoriaId=categoria_id, calificacionMinima=calificacion, municipio=municipio),
+    )
+    return {**catalogo, "busqueda": busqueda}
 
 
 @app.get("/api/bff/admin/metricas", tags=["bff"],
@@ -560,6 +668,45 @@ async def _comision_vigente(prestador_id: str) -> tuple[float, str]:
     return tarifas.get(plan, tarifas.get("FREE", 0.18)), plan
 
 
+async def _exigir_billetera_al_dia(prestador_id: str) -> None:
+    """RN-04: un prestador con la billetera bloqueada no acuerda servicios nuevos.
+
+    El bloqueo lo decide Monetización (EspecificacionPrestadorBloqueado); aquí
+    solo se lee. Si Monetización no responde se deja pasar: un contexto caído no
+    puede paralizar el mercado, y el saldo se sigue cobrando por eventos cuando
+    vuelva.
+    """
+    billeteras = await _pedir("monetizacion", "/billeteras", {"prestadorId": prestador_id, "size": 1})
+    billetera = ((billeteras or {}).get("items") or [None])[0]
+    if billetera and billetera.get("bloqueada"):
+        raise HTTPException(
+            409, f"El prestador tiene la billetera bloqueada por comisiones pendientes "
+                 f"(${round(billetera['saldoPendiente']):,} COP): debe liquidarlas antes de "
+                 "acordar un servicio nuevo")
+
+
+async def _exigir_prestador_verificado(prestador_id: str) -> dict | None:
+    """RN-01: solo un prestador APROBADO puede acordar servicios.
+
+    Lee el estado que Confianza publicó en el perfil (Identidad): aquí no se
+    llama al aliado externo. Un prestador PENDIENTE (el aliado estaba caído al
+    registrarse) o RECHAZADO no cierra acuerdos, y tampoco aparece en la
+    búsqueda. Si Identidad no responde no se puede saber: se deja pasar y se
+    registra, porque un contexto caído no puede detener el mercado.
+    """
+    perfil = await _pedir("identidad", f"/prestadores/{prestador_id}")
+    estado = (perfil or {}).get("estadoVerificacionActual")
+    if estado == "RECHAZADA":
+        raise HTTPException(409, "El prestador no superó la verificación de identidad y antecedentes "
+                                 "(RN-01): no puede acordar servicios")
+    if estado == "PENDIENTE":
+        raise HTTPException(409, "El prestador tiene la verificación de identidad pendiente (RN-01): "
+                                 "todavía no puede acordar servicios")
+    if perfil is None:
+        log.warning("verificacion_desconocida", extra={"prestadorId": prestador_id})
+    return {"estado": estado}
+
+
 @app.get("/api/bff/comision-vigente/{prestador_id}", tags=["bff"],
          summary="Comisión que se congelaría hoy para este prestador")
 async def bff_comision_vigente(prestador_id: str):
@@ -594,6 +741,8 @@ async def bff_proponer_acuerdo(cuerpo: dict):
         if anterior and not (await _ciclo(anterior))["cerrada"]:
             raise HTTPException(409, "El servicio anterior con esta persona sigue abierto: "
                                      "termínalo y califícalo antes de acordar uno nuevo")
+    await _exigir_billetera_al_dia(prestador_id)
+    await _exigir_prestador_verificado(prestador_id)
 
     oficio_id = cuerpo.get("oficioId")
     valor = cuerpo.get("valorPropuesto")
@@ -641,6 +790,11 @@ async def bff_aceptar_acuerdo(acuerdo_id: str, cuerpo: dict):
     acuerdo_previo = await _pedir("contrataciones", f"/acuerdos/{acuerdo_id}")
     if acuerdo_previo is None:
         raise HTTPException(404, f"Acuerdo '{acuerdo_id}' no encontrado")
+    # La propuesta pudo hacerse antes del bloqueo: se revisa otra vez al aceptar.
+    verificacion = None
+    if acuerdo_previo["estado"] == "PENDIENTE":
+        await _exigir_billetera_al_dia(acuerdo_previo["prestadorId"])
+        verificacion = await _exigir_prestador_verificado(acuerdo_previo["prestadorId"])
 
     porcentaje, plan = await _comision_vigente(acuerdo_previo["prestadorId"])
     resultado = await _enviar_json("contrataciones", f"/acuerdos/{acuerdo_id}/aceptar", {
@@ -660,16 +814,13 @@ async def bff_aceptar_acuerdo(acuerdo_id: str, cuerpo: dict):
             _avisar(usuario_dem, "SERVICIO_CONFIRMADO", texto),
             _avisar(usuario_pres, "SERVICIO_CONFIRMADO", texto),
         )
-    return resultado
+    return {**resultado, "verificacion": verificacion}
 
 
 @app.post("/api/bff/contrataciones/{contratacion_id}/check-in", tags=["bff"],
           summary="Check-in del prestador")
 async def bff_check_in(contratacion_id: str, cuerpo: dict | None = None):
-    contratacion = await _enviar_json(
-        "contrataciones", f"/contrataciones/{contratacion_id}/check-in", {})
-    if contratacion is None:
-        raise HTTPException(409, "No se pudo registrar el check-in de esta contratación")
+    contratacion = await _escribir("contrataciones", f"/contrataciones/{contratacion_id}/check-in", {})
 
     usuario_dem, _ = await _usuarios_de(
         contratacion["demandanteId"], contratacion["prestadorId"])
@@ -693,19 +844,7 @@ async def bff_check_out(contratacion_id: str, cuerpo: dict | None = None):
     cobro llega cuando vuelva. El avance se sigue en
     `/api/bff/contrataciones/{id}/cobro`.
     """
-    contratacion = await _enviar_json(
-        "contrataciones", f"/contrataciones/{contratacion_id}/check-out", {})
-    if contratacion is None:
-        raise HTTPException(409, "No se pudo cerrar el servicio: revisa que haya check-in")
-
-    cobro = None
-    if not COBRO_VIA_EVENTOS and contratacion["medioPago"] == "EFECTIVO":
-        cobro = await _enviar_json("monetizacion", "/comisiones", {
-            "prestadorId": contratacion["prestadorId"],
-            "contratacionId": contratacion["id"],
-            "monto": contratacion["montoComision"],
-            "medioPago": contratacion["medioPago"],
-        })
+    contratacion = await _escribir("contrataciones", f"/contrataciones/{contratacion_id}/check-out", {})
 
     monto = f"${round(contratacion['montoComision']):,} COP"
     usuario_dem, usuario_pres = await _usuarios_de(
@@ -714,11 +853,11 @@ async def bff_check_out(contratacion_id: str, cuerpo: dict | None = None):
         _avisar(usuario_dem, "SERVICIO_COMPLETADO",
                 "El servicio terminó. Cuéntanos cómo te fue dejando tu reseña."),
         _avisar(usuario_pres, "COMISION_APLICADA",
-                f"Servicio cerrado. La comisión de {monto} se cargará a tu billetera."
-                if COBRO_VIA_EVENTOS else
-                f"Servicio cerrado. Comisión de {monto} cargada a tu billetera."),
+                f"Servicio cerrado. La comisión de {monto} se cargará a tu billetera."),
     )
-    return {"contratacion": contratacion, "cobro": cobro, "cobroAsincrono": COBRO_VIA_EVENTOS}
+    # `cobro` y `cobroAsincrono` se conservan en la respuesta por compatibilidad
+    # con los clientes; el cobro llega siempre por el evento.
+    return {"contratacion": contratacion, "cobro": None, "cobroAsincrono": True}
 
 
 @app.get("/api/bff/contrataciones/{contratacion_id}/cobro", tags=["bff"],
@@ -747,7 +886,7 @@ async def bff_estado_cobro(contratacion_id: str):
         etapa = "SIN_EVENTO"
     return {
         "contratacionId": contratacion_id,
-        "modo": "EVENTOS" if COBRO_VIA_EVENTOS else "SINCRONO",
+        "modo": "EVENTOS",
         "etapa": etapa,
         "evento": evento,
         "cobro": cobro,
@@ -762,7 +901,7 @@ async def bff_estado_pubsub():
         _pedir("monetizacion", "/cobros/estado-worker"),
     )
     return {
-        "modo": "EVENTOS" if COBRO_VIA_EVENTOS else "SINCRONO",
+        "modo": "EVENTOS",
         "productor": productor,
         "consumidor": consumidor,
     }
@@ -909,19 +1048,35 @@ async def proxy(servicio: str, ruta: str, request: Request):
 async def proxy_escritura(servicio: str, ruta: str, cuerpo: dict):
     if servicio not in SERVICIOS:
         raise HTTPException(404, f"Servicio '{servicio}' desconocido. Consulta /api/servicios.")
-    # Estas escrituras dependen del ciclo de vida del servicio, que solo se
-    # valida en su ruta BFF. Reenviarlas tal cual permitiría saltarse la regla.
-    if f"{servicio}/{ruta}".rstrip("/") in _ESCRITURAS_CON_REGLA:
-        raise HTTPException(403, f"Usa {_ESCRITURAS_CON_REGLA[f'{servicio}/{ruta}'.rstrip('/')]}, "
-                                 "que valida el estado del servicio")
-    if servicio == "comunicacion" and ruta.rstrip("/").endswith("/cerrar"):
-        raise HTTPException(403, "Un chat se cierra solo, cuando se cierra su servicio")
+    # Lista de permitidos, no de prohibidos (ADR-003: el gateway es el punto de
+    # control). Solo pasan tal cual las escrituras que no tienen reglas que
+    # crucen contextos. Todo lo demás —acuerdos, check-in/out, reseñas, planes,
+    # búsquedas, contactos, comisiones— tiene su ruta /api/bff/…, que valida
+    # las reglas del dominio (RN-01, RN-04, RN-05/06, ciclo de vida). Reenviarlo
+    # directo permitiría, por ejemplo, aceptar un acuerdo con comisión 0 %.
+    destino = f"{servicio}/{ruta}".rstrip("/")
+    if destino not in _ESCRITURAS_DIRECTAS:
+        log.warning("escritura_directa_rechazada", extra={"destino": destino})
+        raise HTTPException(403, f"'POST /api/{destino}' no se acepta por el proxy: usa "
+                                 f"{_RUTA_BFF.get(destino, 'la ruta /api/bff/… correspondiente')}, "
+                                 "que valida las reglas del dominio")
     return await _enviar(servicio, f"/{ruta}", cuerpo)
 
 
-_ESCRITURAS_CON_REGLA = {
+# Escrituras sin reglas entre contextos: el servicio dueño las valida solo.
+_ESCRITURAS_DIRECTAS = {
+    "comunicacion/mensajes",        # el chat valida que la conversación siga abierta
+    "mercado/catalogo/oficio",      # alta de categoría y oficio en el catálogo
+    "mercado/prestador-oficios",    # el prestador publica su oferta
+}
+
+# A dónde remitir las escrituras más comunes que llegan por el proxy.
+_RUTA_BFF = {
     "confianza/resenas": "POST /api/bff/resenas",
     "soporte/incidentes": "POST /api/bff/incidentes",
+    "contrataciones/acuerdos": "POST /api/bff/acuerdos",
+    "mercado/contactos": "POST /api/bff/contactar",
+    "mercado/busquedas": "POST /api/bff/busquedas",
 }
 
 

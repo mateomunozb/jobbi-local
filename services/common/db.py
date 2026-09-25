@@ -23,6 +23,7 @@ from sqlalchemy import Select, create_engine, func, inspect, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
+from .observabilidad import log, registrar_metricas
 from .service import Pagina
 
 E = TypeVar("E", bound=BaseModel)
@@ -52,18 +53,24 @@ def crear_motor(servicio: str):
     return create_engine(url, **kwargs)
 
 
-def esperar_a_la_base(motor, intentos: int = 30, espera: float = 2.0) -> None:
-    """Reintenta hasta que PostgreSQL acepte conexiones.
+def esperar_a_la_base(motor, intentos: int = 15) -> None:
+    """Reintenta con backoff exponencial (1, 2, 4 … 30 s) hasta que PostgreSQL acepte conexiones.
 
-    El Pod del servicio puede arrancar antes que el de la base; sin esto el
-    contenedor entraría en CrashLoopBackOff en lugar de esperar.
+    El Pod del servicio puede arrancar antes que el de la base, o durante una
+    caída; sin esto el contenedor entraría en CrashLoopBackOff en lugar de
+    esperar. Tras ~5 minutos se rinde y deja que Kubernetes lo reinicie.
     """
+    from .resiliencia import Backoff
+
+    backoff = Backoff()
     for intento in range(1, intentos + 1):
         try:
             with motor.connect():
                 return
         except OperationalError as e:
-            print(f"[db] Esperando la base ({intento}/{intentos}): {e}", flush=True)
+            espera = backoff.siguiente()
+            log.warning("db_esperando", extra={
+                "intento": intento, "de": intentos, "reintentoEnSegundos": round(espera, 1), "error": str(e)})
             time.sleep(espera)
     raise RuntimeError(f"La base de datos no respondió tras {intentos} intentos")
 
@@ -82,8 +89,49 @@ def inicializar(servicio: str) -> sessionmaker[Session]:
     esperar_a_la_base(motor)
     Base.metadata.create_all(motor)
     completar_columnas(motor)
-    print(f"[db] Contexto '{servicio}' listo en {url_de(servicio).split('@')[-1]}", flush=True)
+    _registrar_metricas_de_pool(motor)
+    log.info("db_lista", extra={"contexto": servicio, "base": url_de(servicio).split("@")[-1]})
     return sessionmaker(motor, expire_on_commit=False)
+
+
+def _registrar_metricas_de_pool(motor) -> None:
+    """Saturación de la persistencia: conexiones del pool de este servicio.
+
+    Por defecto SQLAlchemy abre hasta 5 conexiones fijas + 10 de desborde por
+    servicio; con 10 servicios son 150 frente a los 100 que admite PostgreSQL.
+    Cuando `en_uso` llega a `tamano + desborde_max`, las peticiones esperan
+    turno (y a los 30 s fallan): ese es el punto de quiebre del pool.
+    """
+    pool = motor.pool
+    if not hasattr(pool, "checkedout"):
+        return
+    ayuda = "Conexiones del pool de SQLAlchemy de este servicio"
+
+    def del_pool():
+        # Solo lee el estado del pool en memoria: sigue midiendo con la base caída.
+        return [
+            ("jobbi_db_pool_conexiones", ayuda, {"estado": "en_uso"}, pool.checkedout()),
+            ("jobbi_db_pool_conexiones", ayuda, {"estado": "libres"}, pool.checkedin()),
+            ("jobbi_db_pool_conexiones", ayuda, {"estado": "desborde"}, max(pool.overflow(), 0)),
+            ("jobbi_db_pool_capacidad", "Máximo de conexiones del pool (fijas + desborde)", {},
+             pool.size() + getattr(pool, "_max_overflow", 0)),
+        ]
+
+    def de_postgres():
+        # Consulta a la base: si está caída, solo faltan estas series.
+        with motor.connect() as conexion:
+            maximo = int(conexion.execute(text("SHOW max_connections")).scalar())
+            por_estado = conexion.execute(text(
+                "SELECT coalesce(state, 'otro'), count(*) FROM pg_stat_activity "
+                "WHERE backend_type = 'client backend' GROUP BY 1")).all()
+        return [("jobbi_postgres_conexiones_max", "max_connections de PostgreSQL", {}, maximo)] + [
+            ("jobbi_postgres_conexiones", "Conexiones de clientes en PostgreSQL por estado", {"estado": estado}, n)
+            for estado, n in por_estado]
+
+    registrar_metricas(del_pool)
+    # Un solo servicio mira la base entera, para no contar lo mismo diez veces.
+    if os.getenv("METRICAS_POSTGRES", "false").lower() == "true" and motor.dialect.name == "postgresql":
+        registrar_metricas(de_postgres)
 
 
 def completar_columnas(motor) -> None:
@@ -112,7 +160,7 @@ def completar_columnas(motor) -> None:
                 conexion.execute(text(
                     f'ALTER TABLE {tabla.name} ADD COLUMN "{columna.name}" {tipo}{defecto}'
                 ))
-                print(f"[db] Columna añadida: {tabla.name}.{columna.name}", flush=True)
+                log.info("db_columna_agregada", extra={"tabla": tabla.name, "columna": columna.name})
 
 
 # --- Consultas -------------------------------------------------------------

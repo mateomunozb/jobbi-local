@@ -15,6 +15,8 @@ spec:
   template:
     metadata:
       labels: { app: api-gateway }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8080", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: gateway
@@ -25,8 +27,6 @@ spec:
         - { name: SERVICE_MODULE, value: "gateway" }
         - { name: PORT, value: "8080" }
         - { name: K8S_NAMESPACE, value: "aws-local" }
-        # El check-out no cobra: la comisión llega por el evento (SNS → SQS).
-        - { name: COBRO_VIA_EVENTOS, value: "true" }
         readinessProbe:
           httpGet: { path: /health, port: 8080 }
           initialDelaySeconds: 3

@@ -15,6 +15,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from common.db import condiciones, inicializar, listar, nuevo_id, paginar_consulta
+from common.observabilidad import evento_negocio, registrar_metricas
 from common.service import crear_servicio
 
 from .models import Busqueda, Categoria, Contacto, Oficio, PrestadorOficio
@@ -31,6 +32,22 @@ app = crear_servicio(
 
 
 Sesion: sessionmaker[Session] = inicializar("mercado")
+
+
+def _metricas_de_negocio():
+    """Match rate = contactos iniciados / búsquedas realizadas (se divide en Prometheus)."""
+    with Sesion() as s:
+        busquedas = s.scalar(select(func.count()).select_from(BusquedaFila)) or 0
+        # Solo los contactos que nacieron de una búsqueda: los que se abren
+        # desde el perfil o un referido no miden la conversión de la búsqueda.
+        contactos = s.scalar(select(func.count()).where(ContactoFila.busquedaOrigenId.is_not(None))) or 0
+    return [
+        ("jobbi_busquedas_registradas", "Búsquedas realizadas por demandantes", {}, busquedas),
+        ("jobbi_contactos_iniciados", "Contactos iniciados a partir de una búsqueda", {}, contactos),
+    ]
+
+
+registrar_metricas(_metricas_de_negocio)
 
 
 def sesion() -> Session:
@@ -60,6 +77,34 @@ class AltaContacto(BaseModel):
     demandanteId: str
     prestadorId: str
     busquedaOrigenId: str | None = None
+
+
+class AltaBusqueda(BaseModel):
+    demandanteId: str
+    categoriaId: str | None = None
+    calificacionMinima: float | None = Field(default=None, ge=0, le=5)
+    municipio: str = Field(default="Medellín", max_length=80)
+    comuna: str | None = None
+    barrio: str | None = None
+    latitud: float | None = None
+    longitud: float | None = None
+
+
+@app.post("/busquedas", tags=["demanda"], status_code=201, response_model=Busqueda,
+          summary="Registrar una búsqueda del demandante")
+def alta_busqueda(peticion: AltaBusqueda, s: Session = Depends(sesion)):
+    """Deja constancia de que un demandante buscó, con los filtros que usó.
+
+    Es el denominador de la tasa de contacto tras búsqueda: el contacto que
+    nazca de estos resultados la cita en `busquedaOrigenId`.
+    """
+    busqueda = BusquedaFila(id=nuevo_id(), fecha=date.today(), **peticion.model_dump())
+    s.add(busqueda)
+    s.commit()
+    evento_negocio("busqueda_registrada", "El demandante ejecutó una búsqueda",
+                   busquedaId=busqueda.id, demandanteId=busqueda.demandanteId,
+                   categoriaId=busqueda.categoriaId)
+    return Busqueda.model_validate(busqueda)
 
 
 @app.post("/catalogo/oficio", tags=["catálogo"], status_code=201,
@@ -123,16 +168,22 @@ def alta_contacto(peticion: AltaContacto, s: Session = Depends(sesion)):
     if existente:
         return Contacto.model_validate(existente)
 
+    # El origen solo cuenta si es una búsqueda real de este mismo demandante:
+    # un id ajeno o inventado no puede inflar la tasa de contacto.
+    origen = s.get(BusquedaFila, peticion.busquedaOrigenId) if peticion.busquedaOrigenId else None
     contacto = ContactoFila(
         id=nuevo_id(),
         demandanteId=peticion.demandanteId,
         prestadorId=peticion.prestadorId,
-        busquedaOrigenId=peticion.busquedaOrigenId,
+        busquedaOrigenId=origen.id if origen and origen.demandanteId == peticion.demandanteId else None,
         fechaInicio=date.today(),
         estado="ACTIVO",
     )
     s.add(contacto)
     s.commit()
+    evento_negocio("contacto_iniciado", "El demandante contactó a un prestador",
+                   contactoId=contacto.id, prestadorId=contacto.prestadorId,
+                   busquedaOrigenId=contacto.busquedaOrigenId)
     return Contacto.model_validate(contacto)
 
 

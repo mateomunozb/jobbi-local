@@ -23,6 +23,8 @@ spec:
   template:
     metadata:
       labels: { app: identidad, contexto: identidad-perfiles }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8001", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: identidad
@@ -70,6 +72,8 @@ spec:
   template:
     metadata:
       labels: { app: mercado, contexto: mercado-oficios }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8002", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: mercado
@@ -109,14 +113,19 @@ kind: Deployment
 metadata:
   name: contrataciones
   namespace: aws-local
-  labels: { app: contrataciones, contexto: contrataciones }
+  # Componente del subdominio Mercado de Oficios: el ciclo de vida de la
+  # contratación y su outbox se despliegan aparte (con su propia base) para
+  # que el evento CONTRATACION_COMPLETADA nazca en una transacción aislada.
+  labels: { app: contrataciones, contexto: contrataciones, subdominio: mercado-oficios }
 spec:
   replicas: 1
   selector:
     matchLabels: { app: contrataciones }
   template:
     metadata:
-      labels: { app: contrataciones, contexto: contrataciones }
+      labels: { app: contrataciones, contexto: contrataciones, subdominio: mercado-oficios }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8003", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: contrataciones
@@ -173,6 +182,8 @@ spec:
   template:
     metadata:
       labels: { app: comunicacion, contexto: comunicacion }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8004", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: comunicacion
@@ -185,6 +196,16 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef: { name: postgres-urls, key: comunicacion }
+        # Consumidor de BILLETERA_BLOQUEADA (SNS → SQS); el destinatario de la
+        # notificación se lo pide a Identidad, dueña del perfil.
+        - name: AWS_ENDPOINT_URL
+          value: "http://localstack.aws-local.svc.cluster.local:4566"
+        - { name: AWS_REGION, value: "us-east-1" }
+        - { name: QUEUE_COMUNICACION, value: "comunicacion-events-queue" }
+        - { name: QUEUE_COMUNICACION_DLQ, value: "comunicacion-events-dlq" }
+        - { name: SQS_ENABLED, value: "true" }
+        - name: SERVICIO_IDENTIDAD_URL
+          value: "http://identidad.aws-local.svc.cluster.local:8001"
         readinessProbe:
           httpGet: { path: /health, port: 8004 }
           initialDelaySeconds: 3
@@ -220,6 +241,8 @@ spec:
   template:
     metadata:
       labels: { app: confianza, contexto: confianza-verificacion }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8005", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: confianza
@@ -232,6 +255,23 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef: { name: postgres-urls, key: confianza }
+        # Aliado de verificación (simulado) tras Adapter + Circuit Breaker:
+        # timeout por llamada, fallos seguidos para abrir y espera antes de
+        # probar de nuevo (semiabierto).
+        - name: VERIFICACION_URL
+          value: "http://verificacion-externa.aws-local.svc.cluster.local:8010"
+        - { name: VERIFICACION_TIMEOUT_SEGUNDOS, value: "2" }
+        - { name: CB_UMBRAL_FALLOS, value: "3" }
+        - { name: CB_ESPERA_SEGUNDOS, value: "30" }
+        # Un veredicto del aliado vale 30 días: dentro de ese plazo no se le
+        # vuelve a consultar (cada consulta cuesta dinero).
+        - { name: VERIFICACION_VIGENCIA_DIAS, value: "30" }
+        # Reverificador de fondo: reintenta los PENDIENTE (aliado caído al
+        # registrarse) y renueva los vencidos; publica el veredicto en Identidad.
+        - { name: VERIFICACION_REINTENTOS, value: "true" }
+        - { name: VERIFICACION_REINTENTO_SEGUNDOS, value: "15" }
+        - name: SERVICIO_IDENTIDAD_URL
+          value: "http://identidad.aws-local.svc.cluster.local:8001"
         readinessProbe:
           httpGet: { path: /health, port: 8005 }
           initialDelaySeconds: 3
@@ -267,6 +307,8 @@ spec:
   template:
     metadata:
       labels: { app: soporte, contexto: soporte-disputas }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8006", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: soporte
@@ -314,6 +356,8 @@ spec:
   template:
     metadata:
       labels: { app: adquisicion, contexto: adquisicion-distribucion }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8007", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: adquisicion
@@ -361,6 +405,8 @@ spec:
   template:
     metadata:
       labels: { app: proteccion, contexto: proteccion-seguros }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8008", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: proteccion

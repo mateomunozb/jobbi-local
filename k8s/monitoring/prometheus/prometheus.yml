@@ -1,0 +1,72 @@
+# Configuración de Prometheus para JOBBI (Minikube).
+global:
+  # 5 s: suficiente resolución para ver en vivo una prueba de carga o un fallo
+  # inyectado, con pocas series en un clúster pequeño.
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+
+rule_files:
+- /etc/prometheus/reglas.yml
+
+scrape_configs:
+# Microservicios de JOBBI: /metrics de cada Pod anotado (RED + negocio).
+- job_name: jobbi-servicios
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces: { names: [aws-local] }
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    action: keep
+    regex: "true"
+  - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+    action: replace
+    regex: ([^:]+)(?::\d+)?;(\d+)
+    replacement: $1:$2
+    target_label: __address__
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+    action: replace
+    regex: (.+)
+    target_label: __metrics_path__
+  - source_labels: [__meta_kubernetes_namespace]
+    target_label: namespace
+  - source_labels: [__meta_kubernetes_pod_name]
+    target_label: pod
+  - source_labels: [__meta_kubernetes_pod_label_app]
+    target_label: app
+
+# cAdvisor vía el kubelet (a través del API server): CPU, memoria y red por
+# contenedor. Es la fuente de los paneles de infraestructura.
+- job_name: cadvisor
+  scheme: https
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: true
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+  kubernetes_sd_configs:
+  - role: node
+  relabel_configs:
+  - target_label: __address__
+    replacement: kubernetes.default.svc:443
+  - source_labels: [__meta_kubernetes_node_name]
+    regex: (.+)
+    target_label: __metrics_path__
+    replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+  # Solo lo que usan los tableros: cAdvisor expone cientos de series por Pod.
+  metric_relabel_configs:
+  - source_labels: [__name__]
+    action: keep
+    # cfs_*: periodos de CPU en que el contenedor quedó frenado por su límite
+    # (throttling), la evidencia directa de la saturación en el Fallo 3.
+    regex: container_(cpu_usage_seconds_total|cpu_cfs_(throttled_)?periods_total|memory_working_set_bytes|network_(receive|transmit)_(bytes|packets_dropped)_total|oom_events_total|spec_memory_limit_bytes)
+
+# kube-state-metrics: límites de recursos, reinicios y motivo de terminación
+# (OOMKilled) de cada contenedor.
+- job_name: kube-state-metrics
+  honor_labels: true
+  static_configs:
+  - targets: [kube-state-metrics.monitoring.svc:8080]
+
+- job_name: prometheus
+  static_configs:
+  - targets: [localhost:9090]

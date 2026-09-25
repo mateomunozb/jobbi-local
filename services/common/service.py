@@ -14,7 +14,12 @@ from typing import Any, Callable, Iterable, Sequence, TypeVar
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as TimeoutDelPool
+
+from .observabilidad import instrumentar, log
 
 T = TypeVar("T")
 
@@ -37,6 +42,16 @@ def crear_servicio(*, nombre: str, contexto: str, descripcion: str) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # /metrics, histograma RED, logs JSON y traceId (ver observabilidad.py).
+    instrumentar(app)
+
+    @app.exception_handler(OperationalError)
+    @app.exception_handler(TimeoutDelPool)
+    async def _base_no_disponible(request, error):
+        # Base caída o pool agotado: 503 (reintentable), no un 500 genérico.
+        log.error("base_no_disponible", extra={"route": request.url.path, "error": type(error).__name__})
+        return JSONResponse(status_code=503, content={
+            "detail": "La base de datos no está disponible en este momento; intenta de nuevo."})
 
     @app.get("/health", tags=["operación"], summary="Liveness / readiness probe")
     def health() -> dict[str, str]:

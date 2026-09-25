@@ -16,6 +16,7 @@ export type Sesion = { usuario: Usuario; rol: Rol; perfilDemandante: PerfilDeman
 export type Categoria = { id: string; nombre: string; descripcion: string }
 export type Oficio = { id: string; categoriaId: string; nombre: string; descripcion: string }
 export type OfertaOficio = { oficio: Oficio; categoria: Categoria | null; tarifaReferencial: number; anosExperiencia: number }
+export type CatalogoBff = { categorias: Categoria[] | null; oficios: Pagina<Oficio> | null; prestadores: Pagina<PerfilPrestador> | null }
 export type Contacto = { id: string; demandanteId: string; prestadorId: string; busquedaOrigenId: string | null; fechaInicio: string; estado: string }
 export type Contratacion = { id: string; demandanteId: string; prestadorId: string; oficioId: string; fechaSolicitud: string; fechaEjecucion: string | null; estado: string; valorAcordado: number; medioPago: string; porcentajeComisionAplicado: number; montoComision: number; checkIn: string | null; checkOut: string | null }
 export type PasoTimeline = { estado: string; alcanzado: boolean }
@@ -77,7 +78,7 @@ export type EventoOutbox = { id: string; tipo: string; agregadoId: string; estad
 export type EventoProcesado = { eventoId: string; tipo: string; resultado: string; origen: string; monto: number; fechaProcesado: string; latenciaMs: number | null }
 export type EstadoCobro = {
   contratacionId: string
-  modo: "EVENTOS" | "SINCRONO"
+  modo: "EVENTOS"
   etapa: EtapaCobro
   evento: EventoOutbox | null
   cobro: { cobrado: boolean; evento: EventoProcesado | null; movimiento: Movimiento | null; billetera: Billetera | null } | null
@@ -85,7 +86,7 @@ export type EstadoCobro = {
 export type Latencias = { muestras: number; promedio: number | null; p95: number | null }
 export type Cola = { nombre: string; visibles?: number; enVuelo?: number; error?: string }
 export type EstadoPubSub = {
-  modo: "EVENTOS" | "SINCRONO"
+  modo: "EVENTOS"
   productor: {
     total: number; pendientes: number; publicados: number; pendientesConReintentos: number
     latenciaPublicacionMs: Latencias
@@ -191,10 +192,10 @@ export const api = {
     enviar<{ acuerdo: AcuerdoTarifa; contratacion: Contratacion | null }>(`/bff/acuerdos/${acuerdoId}/aceptar`, { rol }),
   checkIn: (contratacionId: string) =>
     enviar<{ contratacion: Contratacion }>(`/bff/contrataciones/${contratacionId}/check-in`, {}),
-  // Con Pub/Sub (`cobroAsincrono`), `cobro` llega null: la comisión se carga
+  // El cobro es siempre asíncrono (`cobro` llega null): la comisión se carga
   // cuando Monetización consume el evento, y se sigue con `estadoCobro`.
   checkOut: (contratacionId: string) =>
-    enviar<{ contratacion: Contratacion; cobro: { billetera: Billetera; movimiento: Movimiento; yaCobrada: boolean } | null; cobroAsincrono: boolean }>(`/bff/contrataciones/${contratacionId}/check-out`, {}),
+    enviar<{ contratacion: Contratacion; cobro: null; cobroAsincrono: true }>(`/bff/contrataciones/${contratacionId}/check-out`, {}),
   estadoCobro: (contratacionId: string) =>
     pedir<EstadoCobro>(`/bff/contrataciones/${contratacionId}/cobro`),
   estadoPubSub: () => pedir<EstadoPubSub>("/bff/pubsub/estado"),
@@ -220,8 +221,10 @@ export const api = {
   // porque ningún contexto por sí solo sabe con quién se está hablando.
   bandeja: (filtros: { demandanteId?: string; prestadorId?: string }) =>
     pedir<{ total: number; items: ConversacionEnBandeja[] }>(`/bff/mensajes${query(filtros)}`),
-  contactar: (demandanteId: string, prestadorId: string) =>
-    enviar<{ contacto: Contacto; conversacion: Conversacion }>("/bff/contactar", { demandanteId, prestadorId }),
+  // busquedaOrigenId: la búsqueda de la que salió el prestador, si la hubo
+  // (así se mide la tasa de contacto tras búsqueda).
+  contactar: (demandanteId: string, prestadorId: string, busquedaOrigenId?: string) =>
+    enviar<{ contacto: Contacto; conversacion: Conversacion }>("/bff/contactar", { demandanteId, prestadorId, busquedaOrigenId }),
   enviarMensaje: (conversacionId: string, remitenteId: string, contenido: string) =>
     enviar<Mensaje>("/comunicacion/mensajes", { conversacionId, remitenteId, contenido }),
   // Pasa por el gateway, que rechaza el reporte si el servicio ya está cerrado.
@@ -283,7 +286,10 @@ export const api = {
     notificaciones: { noLeidas: number } | null
   }>(`/bff/demandantes/${id}/inicio`),
   bffCatalogo: (filtros: { categoriaId?: string; calificacionMinima?: number; municipio?: string } = {}) =>
-    pedir<{ categorias: Categoria[] | null; oficios: Pagina<Oficio> | null; prestadores: Pagina<PerfilPrestador> | null }>(`/bff/catalogo${query(filtros)}`),
+    pedir<CatalogoBff>(`/bff/catalogo${query(filtros)}`),
+  // Lo mismo que el catálogo, pero deja registrada la búsqueda del demandante.
+  buscar: (demandanteId: string, filtros: { categoriaId?: string; calificacionMinima?: number; municipio?: string } = {}) =>
+    enviar<CatalogoBff & { busqueda: { id: string } | null }>("/bff/busquedas", { demandanteId, ...filtros }),
   bffMetricasAdmin: () => pedir<{
     contrataciones: { total: number; porEstado: Record<string, number>; valorTotalCompletado: number; comisionTotalCompletada: number } | null
     catalogo: { items: { categoria: Categoria; totalOficios: number; totalOfertas: number }[] } | null

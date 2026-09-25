@@ -18,6 +18,8 @@ spec:
   template:
     metadata:
       labels: { app: servicio-monetizacion, contexto: monetizacion }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8000", prometheus.io/path: /metrics }
     spec:
       containers:
       - name: monetizacion
@@ -39,6 +41,11 @@ spec:
         - { name: SQS_ENABLED, value: "true" }
         # Hilos consumidores (long polling, lotes de 10 mensajes cada uno).
         - { name: SQS_HILOS, value: "2" }
+        # Productor de BILLETERA_BLOQUEADA (outbox → SNS → Comunicación).
+        - { name: SNS_ENABLED, value: "true" }
+        - { name: SNS_TOPIC_BILLETERA_BLOQUEADA, value: "billetera-bloqueada-topic" }
+        # Este servicio (y solo este) publica las conexiones totales de PostgreSQL.
+        - { name: METRICAS_POSTGRES, value: "true" }
         readinessProbe:
           httpGet: { path: /health, port: 8000 }
           initialDelaySeconds: 3

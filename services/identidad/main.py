@@ -172,6 +172,10 @@ class CambioPlan(BaseModel):
     plan: PlanPrestador
 
 
+class ResultadoVerificacion(BaseModel):
+    estado: EstadoVerificacion
+
+
 class ReputacionPrestador(BaseModel):
     """Reputación recalculada por el contexto de Confianza.
 
@@ -214,6 +218,22 @@ def actualizar_reputacion(
     fila = _prestador_o_404(s, prestador_id)
     fila.calificacionPromedio = peticion.calificacionPromedio
     fila.totalResenas = peticion.totalResenas
+    s.commit()
+    return PerfilPrestador.model_validate(fila)
+
+
+@app.post("/prestadores/{prestador_id}/verificacion", tags=["prestadores"],
+          response_model=PerfilPrestador, summary="Publicar el veredicto de verificación (lo llama Confianza)")
+def publicar_verificacion(prestador_id: str, peticion: ResultadoVerificacion, s: Session = Depends(sesion)):
+    """RN-01: la insignia refleja el veredicto del aliado, y solo APROBADA la otorga.
+
+    El veredicto es de Confianza; este contexto guarda la copia que muestra el
+    perfil y que filtra la búsqueda. El gateway no reenvía esta escritura
+    desde afuera: solo la llama Confianza por la red interna.
+    """
+    fila = _prestador_o_404(s, prestador_id)
+    fila.estadoVerificacionActual = peticion.estado.value
+    fila.insigniaVerificado = peticion.estado is EstadoVerificacion.APROBADA
     s.commit()
     return PerfilPrestador.model_validate(fila)
 

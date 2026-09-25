@@ -1,0 +1,92 @@
+# Escalador de la base: simula el auto-escalado de Aurora Serverless v2.
+#
+# Lee la saturación de PostgreSQL en Prometheus y le sube o baja la CPU y la
+# memoria EN CALIENTE (subrecurso pods/resize, Kubernetes >= 1.33), sin
+# reiniciar el Pod. Ver services/escalador_bd/ y
+# scripts/caos/fallo3-saturacion-bd.sh.
+#
+# Permisos mínimos: leer y redimensionar solo el Pod postgres-0.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: escalador-bd
+  namespace: aws-local
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: escalador-bd
+  namespace: aws-local
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  resourceNames: ["postgres-0"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["pods/resize"]
+  resourceNames: ["postgres-0"]
+  verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: escalador-bd
+  namespace: aws-local
+subjects:
+- { kind: ServiceAccount, name: escalador-bd, namespace: aws-local }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: escalador-bd
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: escalador-bd
+  namespace: aws-local
+  labels: { app: escalador-bd }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: escalador-bd }
+  template:
+    metadata:
+      labels: { app: escalador-bd }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8011", prometheus.io/path: /metrics }
+    spec:
+      serviceAccountName: escalador-bd
+      containers:
+      - name: escalador-bd
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8011 }]
+        envFrom:
+        # Usuario administrador de PostgreSQL: ajusta work_mem con ALTER SYSTEM.
+        - secretRef: { name: postgres-credenciales }
+        env:
+        - { name: SERVICE_MODULE, value: "escalador_bd" }
+        - { name: PORT, value: "8011" }
+        - { name: PGHOST, value: "postgres.aws-local.svc.cluster.local" }
+        - { name: PROMETHEUS_URL, value: "http://prometheus.monitoring.svc.cluster.local:9090" }
+        - { name: INTERVALO_SEGUNDOS, value: "5" }
+        readinessProbe:
+          httpGet: { path: /health, port: 8011 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8011 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "20m", memory: "64Mi" }
+          limits: { cpu: "200m", memory: "192Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: escalador-bd
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: escalador-bd }
+  ports: [{ name: http, port: 8011, targetPort: 8011 }]

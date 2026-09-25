@@ -55,3 +55,22 @@ class NotificacionFila(Base):
     contenido: Mapped[str] = mapped_column(Text)
     fechaEnvio: Mapped[datetime] = mapped_column(DateTime, index=True)
     leida: Mapped[bool] = mapped_column(Boolean, index=True)
+
+
+class EventoRecibidoFila(Base):
+    """Bandeja de entrada del consumidor de Comunicación (Idempotent Receiver).
+
+    SNS/SQS entregan *al menos una vez*. Registrar cada `eventoId` en la misma
+    transacción que la notificación hace que un duplicado choque con la clave
+    primaria y el prestador no reciba dos veces el mismo aviso.
+    """
+
+    __tablename__ = "eventos_recibidos"
+
+    eventoId: Mapped[str] = mapped_column(String(100), primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(60), index=True)
+    # NOTIFICADO | IGNORADO
+    resultado: Mapped[str] = mapped_column(String(40), index=True)
+    notificacionId: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    mensajeSqsId: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fechaProcesado: Mapped[datetime] = mapped_column(DateTime, index=True)

@@ -17,5 +17,7 @@ os.environ["SQLITE_DIR"] = tempfile.mkdtemp(prefix="jobbi-tests-")
 os.environ.pop("DATABASE_URL", None)
 os.environ["SNS_ENABLED"] = "false"
 os.environ["SQS_ENABLED"] = "false"
+# El reverificador de Confianza también corre en segundo plano: las pruebas lo llaman directo.
+os.environ["VERIFICACION_REINTENTOS"] = "false"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

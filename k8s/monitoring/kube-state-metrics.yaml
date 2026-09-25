@@ -1,0 +1,76 @@
+# kube-state-metrics: expone el estado de los objetos de Kubernetes como
+# métricas (límites de recursos, reinicios, OOMKilled, réplicas disponibles).
+# Acotado a los recursos y namespaces que usan los tableros, para que pese poco.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jobbi-kube-state-metrics
+rules:
+- apiGroups: [""]
+  resources: [pods, nodes, namespaces]
+  verbs: [list, watch]
+- apiGroups: [apps]
+  resources: [deployments, statefulsets]
+  verbs: [list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jobbi-kube-state-metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jobbi-kube-state-metrics
+subjects:
+- kind: ServiceAccount
+  name: kube-state-metrics
+  namespace: monitoring
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+  labels: { app: kube-state-metrics }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: kube-state-metrics }
+  template:
+    metadata:
+      labels: { app: kube-state-metrics }
+    spec:
+      serviceAccountName: kube-state-metrics
+      containers:
+      - name: kube-state-metrics
+        image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
+        args:
+        - --resources=pods,deployments,statefulsets,nodes
+        - --namespaces=aws-local,monitoring
+        ports: [{ containerPort: 8080, name: http }]
+        readinessProbe:
+          httpGet: { path: /readyz, port: 8081 }
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /livez, port: 8080 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "20m", memory: "32Mi" }
+          limits: { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+spec:
+  type: ClusterIP
+  selector: { app: kube-state-metrics }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]

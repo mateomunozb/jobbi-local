@@ -14,3 +14,5 @@ email-validator==2.2.0
 SQLAlchemy==2.0.54
 psycopg[binary]==3.2.10
 boto3==1.35.90
+# Observabilidad: cada servicio expone /metrics en el formato de Prometheus.
+prometheus-client==0.26.0

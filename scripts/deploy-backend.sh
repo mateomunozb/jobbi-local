@@ -17,10 +17,15 @@ kubectl rollout status statefulset/postgres -n "$NS" --timeout=300s
 kubectl apply -f "$ROOT_DIR/k8s/domain-services.yaml"
 kubectl apply -f "$ROOT_DIR/k8s/monetizacion-deployment.yaml"
 kubectl apply -f "$ROOT_DIR/k8s/gateway-deployment.yaml"
+# Aliado de verificación simulado (dependencia externa de Confianza, Fallo 1).
+kubectl apply -f "$ROOT_DIR/k8s/verificacion-externa-deployment.yaml"
+# Auto-escalado en caliente de PostgreSQL (simulación de Aurora Serverless v2, Fallo 3).
+kubectl apply -f "$ROOT_DIR/k8s/escalador-bd.yaml"
 
 echo "=== Esperando a que los Deployments estén disponibles ==="
 for deploy in localstack identidad mercado contrataciones comunicacion confianza \
-              soporte adquisicion proteccion servicio-monetizacion api-gateway; do
+              soporte adquisicion proteccion servicio-monetizacion api-gateway \
+              verificacion-externa escalador-bd; do
   kubectl rollout status "deployment/$deploy" -n "$NS" --timeout=120s
 done
 

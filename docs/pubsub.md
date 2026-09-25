@@ -103,7 +103,62 @@ suscribe con su propia cola y el productor no cambia.
 
 La regla de cobro vive en un solo lugar
 ([monetizacion/billetera.py](../services/monetizacion/billetera.py)) y la usan
-el worker y `POST /comisiones`.
+el worker SQS: **no existe otro camino de cobro** (ADR-002). Dentro de ella:
+
+- **Strategy** ([monetizacion/comisiones.py](../services/monetizacion/comisiones.py)):
+  el worker cobra con `ComisionCongelada`, es decir, con el porcentaje que quedó
+  escrito en la contratación (RN-05/06), aunque el prestador haya cambiado de
+  plan después. `ComisionPlanFree` (18 %) y `ComisionPlanPro` (12 %) son la
+  tarifa vigente que publica `/planes` y que el gateway congela al aceptar.
+- **Repository** ([monetizacion/repositorio.py](../services/monetizacion/repositorio.py),
+  [contrataciones/repositorio.py](../services/contrataciones/repositorio.py),
+  [comunicacion/repositorio.py](../services/comunicacion/repositorio.py)): el
+  camino de escritura del caso de uso (aceptar, check-in, check-out, cobro,
+  pago, aviso) no toca el ORM; las reglas reciben y devuelven objetos del
+  dominio y se prueban con un repositorio en memoria
+  ([test_repositorio.py](../services/tests/test_repositorio.py)). La transacción
+  (Unit of Work) la cierra la capa de aplicación. Las consultas de solo
+  lectura (listados, resúmenes, métricas) leen directo, como lado de consulta.
+- **Specification** ([monetizacion/especificaciones.py](../services/monetizacion/especificaciones.py)):
+  `EspecificacionPrestadorBloqueado` bloquea la billetera cuando
+  `saldoPendiente >= umbral` (RN-04; el umbral exacto ya bloquea).
+- **Pago en efectivo:** junto con el cargo se registra un `Pago` con
+  `referenciaPasarela = EFECTIVO`, una sola vez por contratación.
+
+### Segundo evento: BILLETERA_BLOQUEADA (Monetización → Comunicación)
+
+```mermaid
+flowchart LR
+    subgraph Monetizacion [Monetización · productor]
+        C[aplicar_comision] -->|misma transacción| OBM[(outbox_monetizacion)]
+        OBM --> RLM[Relay]
+    end
+    RLM --> TB[SNS<br/>billetera-bloqueada-topic]
+    TB --> QC[SQS<br/>comunicacion-events-queue]
+    QC -. 5 fallos .-> DLQC[SQS<br/>comunicacion-events-dlq]
+    subgraph Comunicacion [Comunicación · consumidor]
+        WC[Worker SQS] --> ER[(eventos_recibidos)]
+        WC --> N[(notificaciones)]
+    end
+    QC --> WC
+```
+
+- Cuando un cargo hace que la billetera **pase** de no bloqueada a bloqueada,
+  Monetización guarda `BILLETERA_BLOQUEADA` en su propio outbox, en la misma
+  transacción que el cargo. Los cargos siguientes a una billetera ya bloqueada
+  no repiten el aviso.
+- El mecanismo del outbox y del relay es el mismo que el de Contrataciones
+  ([common/outbox.py](../services/common/outbox.py)); cada contexto tiene su
+  propia tabla, en su propia base.
+- Comunicación ([comunicacion/sqs_worker.py](../services/comunicacion/sqs_worker.py))
+  consume con idempotencia (`eventos_recibidos`), le pide a Identidad el
+  `usuarioId` del prestador y deja la notificación `BILLETERA_BLOQUEADA`. Si
+  Identidad no responde, el mensaje se reintenta y termina en su DLQ.
+- Estado: `GET /api/monetizacion/outbox` (productor) y
+  `GET /api/comunicacion/eventos/estado-worker` (consumidor).
+- Efecto en el mercado: el gateway rechaza con `409` que un prestador con la
+  billetera bloqueada proponga o acepte un servicio nuevo. Si Monetización no
+  responde, deja pasar: un contexto caído no paraliza el mercado.
 
 ### Gateway y frontend
 
@@ -120,22 +175,27 @@ el worker y `POST /comisiones`.
   se refresca cada 2 s. Durante una prueba de carga se ve la cola llenarse y
   vaciarse.
 
-### Modo sin Pub/Sub
+### Un solo camino de cobro
 
-Si no hay LocalStack (backend local sin Docker, o `PUBSUB=0`), nadie entrega los
-eventos. En ese caso el gateway arranca con `COBRO_VIA_EVENTOS=false` y vuelve al
-cobro síncrono, para que la comisión no se pierda.
+El cobro de comisiones es siempre asíncrono. No hay endpoint que cargue una
+billetera de forma síncrona (se eliminaron `POST /comisiones` y `POST /cobrar`),
+ni modo "sin broker": `./scripts/run-backend-local.sh` exige Docker para
+levantar LocalStack. Y el gateway no reenvía escrituras directas a los servicios
+salvo una lista corta sin reglas de dominio (mensajes del chat y alta del
+catálogo): todo lo demás pasa por `/api/bff/…`, que valida las reglas.
 
 ### Variables de entorno
 
 | Variable | Servicio | Por defecto |
 |---|---|---|
-| `AWS_ENDPOINT_URL` | contrataciones, monetización | `http://localstack.aws-local.svc.cluster.local:4566` |
+| `AWS_ENDPOINT_URL` | contrataciones, monetización, comunicación | `http://localstack.aws-local.svc.cluster.local:4566` |
 | `SNS_ENABLED` / `SNS_TOPIC_NAME` | contrataciones | `true` / `contratacion-completada-topic` |
-| `OUTBOX_INTERVALO_SEGUNDOS` | contrataciones | `1.0` |
+| `SNS_ENABLED` / `SNS_TOPIC_BILLETERA_BLOQUEADA` | monetización | `true` / `billetera-bloqueada-topic` |
+| `OUTBOX_INTERVALO_SEGUNDOS` | contrataciones, monetización | `1.0` |
 | `SQS_ENABLED` / `QUEUE_NAME` / `QUEUE_DLQ_NAME` | monetización | `true` / `monetizacion-events-queue` / `monetizacion-events-dlq` |
 | `SQS_HILOS` | monetización | `2` |
-| `COBRO_VIA_EVENTOS` | gateway | `true` |
+| `SQS_ENABLED` / `QUEUE_COMUNICACION` / `QUEUE_COMUNICACION_DLQ` | comunicación | `true` / `comunicacion-events-queue` / `comunicacion-events-dlq` |
+| `SERVICIO_IDENTIDAD_URL` | comunicación | `http://identidad.aws-local.svc.cluster.local:8001` |
 
 ---
 
@@ -157,6 +217,12 @@ Reemplazan SNS por un doble de prueba y verifican lo siguiente:
 - el consumidor cobra, y un mensaje duplicado o republicado no cobra dos veces;
 - un mensaje ilegible se deja para reintento (camino a la DLQ);
 - la latencia es correcta aunque el mensaje traiga la hora en UTC.
+
+Y 19 más en [services/tests/test_billetera_y_patrones.py](../services/tests/test_billetera_y_patrones.py)
+para el bloqueo y su aviso: umbral − 1 / exacto / + 1, un solo
+`BILLETERA_BLOQUEADA` por bloqueo, comisión congelada tras cambiar de plan,
+pago en efectivo registrado una vez, consumidor idempotente de Comunicación,
+transiciones inválidas de la contratación y el rechazo del gateway.
 
 ### b) Levantar el sistema
 

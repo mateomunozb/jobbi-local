@@ -1,0 +1,53 @@
+# Simulador del aliado externo de verificación (tipo Truora). NO es el servicio real.
+#
+# Representa la dependencia externa de Confianza: al otro lado de la red y con
+# su propio formato, detrás del Adapter y del Circuit Breaker. Es el blanco del
+# Fallo 1 (retardo de 8 s y respuestas 504), que se inyecta en caliente por
+# POST /_caos; ver scripts/caos/fallo1-dependencia-externa.sh.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: verificacion-externa
+  namespace: aws-local
+  labels: { app: verificacion-externa, contexto: aliado-externo-simulado }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: verificacion-externa }
+  template:
+    metadata:
+      labels: { app: verificacion-externa, contexto: aliado-externo-simulado }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8010", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: verificacion-externa
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8010 }]
+        env:
+        - { name: SERVICE_MODULE, value: "verificacion_externa" }
+        - { name: PORT, value: "8010" }
+        # Porcentaje de documentos con antecedentes (rechazados). Pseudoaleatorio:
+        # lo decide un hash del documento, así que es reproducible.
+        - { name: PORCENTAJE_RECHAZO, value: "20" }
+        readinessProbe:
+          httpGet: { path: /health, port: 8010 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8010 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "20m", memory: "64Mi" }
+          limits: { cpu: "200m", memory: "160Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: verificacion-externa
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: verificacion-externa }
+  ports: [{ name: http, port: 8010, targetPort: 8010 }]

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Date, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.db import Base
@@ -45,3 +45,30 @@ class ResenaFila(Base):
     comentario: Mapped[str] = mapped_column(Text)
     fecha: Mapped[date] = mapped_column(Date, index=True)
     estadoModeracion: Mapped[str] = mapped_column(String(20), index=True)
+
+
+class SujetoVerificacionFila(Base):
+    """Estado de verificación de cada prestador (RN-01): la fuente de verdad.
+
+    Nace PENDIENTE al registrarse el prestador y pasa a APROBADA o RECHAZADA
+    cuando el aliado responde. Si el aliado está caído queda PENDIENTE, y el
+    reverificador de fondo lo reintenta. El veredicto vale
+    VERIFICACION_VIGENCIA_DIAS: después se renueva, conservando el anterior
+    mientras tanto.
+
+    Guarda el número de documento porque sin él no se puede consultar al
+    aliado (ni al registrarse ni al renovar). Es dato de este contexto y nunca
+    se escribe en los logs.
+    """
+
+    __tablename__ = "sujetos_verificacion"
+
+    prestadorId: Mapped[str] = mapped_column(String(36), primary_key=True)
+    documento: Mapped[str] = mapped_column(String(30))
+    estado: Mapped[str] = mapped_column(String(20), index=True)  # PENDIENTE | APROBADA | RECHAZADA
+    fechaVeredicto: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # ¿Identidad ya muestra este estado? Si no, el reverificador se lo vuelve a enviar.
+    sincronizado: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    intentos: Mapped[int] = mapped_column(Integer, default=0)
+    ultimoIntento: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    creadoEn: Mapped[datetime] = mapped_column(DateTime, index=True)

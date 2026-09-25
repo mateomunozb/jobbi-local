@@ -1,84 +1,98 @@
 """Regla de cobro de comisiones sobre la billetera del prestador.
 
-La usan dos caminos: el worker SQS (el cobro normal, disparado por el evento
-CONTRATACION_COMPLETADA) y el endpoint `POST /comisiones` (cobro síncrono, que
-el gateway usa solo cuando corre sin Pub/Sub). Vivir en un solo lugar garantiza
-que ambos cobran igual y que ninguno cobra dos veces la misma contratación.
+La usa un solo camino: el worker SQS, disparado por el evento
+CONTRATACION_COMPLETADA (ADR-002). Es idempotente por contratación: aunque el
+evento llegue dos veces, la comisión se carga una sola vez.
+
+No conoce la base de datos: trabaja con objetos del dominio a través de un
+repositorio (`repositorio.py`). Por eso se prueba con un doble en memoria.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
+from typing import Any, Protocol
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
-
+from common import eventos
 from common.db import nuevo_id
 
-from .tablas import BilleteraPrestadorFila, MovimientoBilleteraFila
+from .especificaciones import UMBRAL_BLOQUEO, EspecificacionPrestadorBloqueado  # noqa: F401
+from .models import BilleteraPrestador, MovimientoBilletera, Pago
 
-# Por encima de este saldo la billetera se bloquea: la comisión en efectivo la
-# cobra el prestador de su cliente y queda debiéndosela a la plataforma, así que
-# acumular deuda sin liquidar no puede ser gratis.
-UMBRAL_BLOQUEO = 150000.0
+BLOQUEO = EspecificacionPrestadorBloqueado()
 
 
-def billetera_de(s: Session, prestador_id: str) -> BilleteraPrestadorFila:
-    """Devuelve la billetera del prestador, creándola en su primer movimiento.
+class Billeteras(Protocol):
+    """Lo que la regla necesita del almacén (lo implementa RepositorioBilleteras)."""
 
-    No se abre en el registro: un prestador que nunca ha trabajado no tiene
-    nada que liquidar, y la base no guarda filas que no representen un hecho.
+    def obtener_o_crear(self, prestador_id: str) -> BilleteraPrestador: ...
+    def cargo_de(self, billetera_id: str, contratacion_id: str) -> MovimientoBilletera | None: ...
+    def registrar_cargo(self, billetera_id: str, contratacion_id: str,
+                        monto: float) -> tuple[MovimientoBilletera, BilleteraPrestador]: ...
+    def fijar_bloqueo(self, billetera_id: str, bloqueada: bool) -> None: ...
+    def pago_de(self, contratacion_id: str) -> Pago | None: ...
+    def agregar_pago(self, pago: Pago) -> None: ...
+    def registrar_evento(self, tipo: str, agregado_id: str, datos: dict[str, Any]) -> None: ...
+
+
+@dataclass(frozen=True)
+class ResultadoCobro:
+    billetera: BilleteraPrestador
+    movimiento: MovimientoBilletera
+    yaCobrada: bool
+    # Datos del BILLETERA_BLOQUEADA emitido, si este cargo cruzó el umbral.
+    bloqueo: dict[str, Any] | None = None
+
+
+def aplicar_comision(billeteras: Billeteras, prestador_id: str, contratacion_id: str,
+                     monto: float) -> ResultadoCobro:
+    """Carga la comisión en la billetera del prestador. No hace commit.
+
+    Idempotente por contratación: si ya existe el cargo de esa contratación, lo
+    devuelve sin volver a cobrar.
     """
-    billetera = s.scalars(select(BilleteraPrestadorFila).where(
-        BilleteraPrestadorFila.prestadorId == prestador_id
-    )).first()
-    if billetera is None:
-        billetera = BilleteraPrestadorFila(
-            id=nuevo_id(), prestadorId=prestador_id, saldoPendiente=0.0, bloqueada=False,
-        )
-        s.add(billetera)
-        s.flush()
-    return billetera
-
-
-def aplicar_comision(
-    s: Session, prestador_id: str, contratacion_id: str, monto: float,
-) -> tuple[BilleteraPrestadorFila, MovimientoBilleteraFila, bool]:
-    """Carga la comisión y devuelve (billetera, movimiento, yaCobrada). No hace commit.
-
-    Idempotente por contratación: si ya existe el movimiento COMISION de esa
-    contratación, lo devuelve sin volver a cobrar.
-    """
-    billetera = billetera_de(s, prestador_id)
-
-    existente = s.scalars(select(MovimientoBilleteraFila).where(
-        MovimientoBilleteraFila.billeteraId == billetera.id,
-        MovimientoBilleteraFila.contratacionId == contratacion_id,
-        MovimientoBilleteraFila.tipo == "COMISION",
-    )).first()
+    billetera = billeteras.obtener_o_crear(prestador_id)
+    existente = billeteras.cargo_de(billetera.id, contratacion_id)
     if existente:
-        return billetera, existente, True
+        return ResultadoCobro(billetera, existente, yaCobrada=True)
 
-    monto = abs(monto)
-    movimiento = MovimientoBilleteraFila(
-        id=nuevo_id(),
-        billeteraId=billetera.id,
-        contratacionId=contratacion_id,
-        tipo="COMISION",
-        # Negativo: es lo que el prestador le debe a la plataforma.
-        monto=-monto,
-        fecha=date.today(),
-    )
-    s.add(movimiento)
+    movimiento, billetera = billeteras.registrar_cargo(billetera.id, contratacion_id, abs(monto))
+    # El estado anterior se lee después del cargo: si otro consumidor bloqueó
+    # esta billetera en paralelo, su commit ya es visible y el aviso no se
+    # emite dos veces.
+    estaba_bloqueada = billetera.bloqueada
+    bloqueada = BLOQUEO.es_satisfecha_por(billetera)
+    if bloqueada != estaba_bloqueada:
+        billeteras.fijar_bloqueo(billetera.id, bloqueada)
+        billetera = billetera.model_copy(update={"bloqueada": bloqueada})
 
-    # El saldo se suma en SQL (saldo = saldo + monto) y no leyendo y
-    # reescribiendo en Python: con varios consumidores en paralelo, la segunda
-    # forma pierde cobros cuando dos escriben la misma billetera a la vez.
-    s.execute(
-        update(BilleteraPrestadorFila)
-        .where(BilleteraPrestadorFila.id == billetera.id)
-        .values(saldoPendiente=BilleteraPrestadorFila.saldoPendiente + monto)
-    )
-    s.refresh(billetera)
-    billetera.bloqueada = billetera.saldoPendiente > UMBRAL_BLOQUEO
-    return billetera, movimiento, False
+    bloqueo = None
+    if bloqueada and not estaba_bloqueada:
+        bloqueo = {
+            "billeteraId": billetera.id,
+            "prestadorId": prestador_id,
+            "contratacionId": contratacion_id,
+            "saldoPendiente": billetera.saldoPendiente,
+            "umbralBloqueo": BLOQUEO.umbral,
+        }
+        # Transactional Outbox: el aviso se guarda con el cargo que lo causó.
+        billeteras.registrar_evento(eventos.BILLETERA_BLOQUEADA, billetera.id, bloqueo)
+    return ResultadoCobro(billetera, movimiento, yaCobrada=False, bloqueo=bloqueo)
+
+
+def registrar_pago_efectivo(billeteras: Billeteras, contratacion_id: str, valor: float,
+                            fecha: date) -> tuple[Pago, bool]:
+    """Deja constancia del pago en efectivo de una contratación. No hace commit.
+
+    El dinero pasó de mano en mano sin tocar la plataforma: no hay pasarela que
+    lo confirme, lo confirma el check-out. Idempotente por contratación; devuelve
+    (pago, yaRegistrado).
+    """
+    existente = billeteras.pago_de(contratacion_id)
+    if existente:
+        return existente, True
+    pago = Pago(id=nuevo_id(), contratacionId=contratacion_id, monto=valor, estado="APROBADO",
+                fechaPago=fecha, referenciaPasarela="EFECTIVO")
+    billeteras.agregar_pago(pago)
+    return pago, False

@@ -177,8 +177,10 @@ lo publica en SNS. Ver [docs/pubsub.md](../docs/pubsub.md).
 | GET | `/cobros` | `limite` — últimos eventos procesados por el worker SQS (persistidos) |
 | GET | `/cobros/estado-worker` | worker, profundidad de cola y DLQ, resultados y latencia check-out → cobro |
 | GET | `/cobros/contratacion/{id}` | si la comisión de esa contratación ya se cobró |
-| POST | `/comisiones` | cobro síncrono (solo sin Pub/Sub; misma regla idempotente que el worker) |
-| POST | `/cobrar` | cobro síncrono *(Pub/Sub original)* |
+| GET | `/outbox` | eventos BILLETERA_BLOQUEADA que produce Monetización y su publicación |
+
+No hay endpoint de cobro: la comisión se carga solo al consumir
+CONTRATACION_COMPLETADA (ADR-002).
 
 ### Soporte, Adquisición y Protección
 
@@ -243,8 +245,6 @@ conocer la topología interna ni encadenar seis peticiones.
 Por diseño, esta fase expone **operaciones de lectura** salvo tres excepciones:
 
 - `POST /auth/registro` y `POST /auth/login`, que sustentan el acceso a la app.
-- `POST /cobrar`, que ya existía en el simulador de Monetización y se conserva
-  para no romper el flujo Pub/Sub ni la prueba de carga k6.
 
 Todo lo demás es `GET`.
 

@@ -308,7 +308,7 @@ sequenceDiagram
 | **Aprovisionamiento automático**: el script corre como *init hook* al arrancar LocalStack; el Pod está *Ready* solo cuando terminó | ConfigMap + `readinessProbe` de Kubernetes | `k8s/localstack-deployment.yaml` |
 | **Consumidor idempotente**: registra cada `eventoId` en la misma transacción que el cobro; el duplicado choca con la clave primaria | boto3 (`receive_message` con long polling), SQLAlchemy | `monetizacion/sqs_worker.py`, tabla `eventos_procesados` |
 | **Cobro atómico**: `saldo = saldo + monto` en SQL, no leer y reescribir | SQLAlchemy `update()` | `monetizacion/billetera.py` |
-| **Modo sin broker**: sin LocalStack, el gateway vuelve al cobro síncrono | Variable `COBRO_VIA_EVENTOS` | `gateway/main.py`, `scripts/run-backend-local.sh` |
+| **Un solo camino de cobro**: no hay cobro síncrono ni modo sin broker; el gateway solo reenvía escrituras sin reglas de dominio | Lista de permitidos del proxy | `gateway/main.py` (`_ESCRITURAS_DIRECTAS`) |
 | **Observabilidad**: estado del outbox, colas, DLQ y latencias; tarjeta "Cobro por eventos" y panel en Métricas | FastAPI (BFF), React | `/api/bff/pubsub/estado`, `/api/bff/contrataciones/{id}/cobro` |
 
 **Garantías:**
@@ -463,9 +463,8 @@ un reemplazo deliberadamente mínimo de Alembic.
 | `k8s/localstack-deployment.yaml` | ConfigMap `localstack-init` con el aprovisionamiento; `readinessProbe` que espera al *init hook* |
 | `k8s/domain-services.yaml` | Contrataciones recibe `AWS_ENDPOINT_URL`, `SNS_TOPIC_NAME` y `SNS_ENABLED`; Comunicación queda con 1 réplica (salas en memoria) |
 | `k8s/monetizacion-deployment.yaml` | `QUEUE_DLQ_NAME` y `SQS_HILOS` |
-| `k8s/gateway-deployment.yaml` | `COBRO_VIA_EVENTOS=true` |
 | `frontend/Dockerfile` | `ARG API_GATEWAY_URL` para el rewrite del WebSocket |
-| `scripts/run-backend-local.sh` | Levanta LocalStack en Docker; con `PUBSUB=0` corre sin broker |
+| `scripts/run-backend-local.sh` | Levanta LocalStack en Docker (obligatorio: el cobro solo existe por eventos) |
 | `scripts/deploy-*.sh`, `reset-datos.sh` | Despliegan y esperan a LocalStack; vacían las colas al reiniciar los datos |
 
 ---
@@ -564,5 +563,3 @@ cd frontend && pnpm install && pnpm dev
 - **Consistencia entre contextos.** Las operaciones BFF que escriben en varios
   servicios (cambio de plan, cierre del chat al calificar) no son
   transaccionales. Si la segunda escritura falla, la primera ya quedó hecha.
-- `simulators/monetizacion/` es el simulador original, reemplazado por
-  `services/monetizacion/`; se conserva solo como referencia.

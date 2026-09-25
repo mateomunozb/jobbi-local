@@ -365,16 +365,24 @@ function SearchScreen({ setScreen }: { setScreen: (s: Screen) => void }) {
         <div className="section-heading"><h2>Prestadores cerca de ti</h2><button className="text-button" onClick={() => { seleccionar({ categoriaId }); setScreen("results") }}>Ver todos</button></div>
         {(datos.prestadores?.items.length ?? 0) === 0
           ? <EmptyState title="No hay prestadores en esta categoría" text="Prueba con otra categoría o vuelve a Todos." action="Ver todos" onClick={() => setCategoriaId(undefined)} />
-          : <div className="provider-list">{(datos.prestadores?.items ?? []).slice(0, 3).map((p: any) => <ProviderCard key={p.id} prestador={p} onClick={() => { seleccionar({ prestadorId: p.id }); setScreen("provider") }} />)}</div>}
+          : <div className="provider-list">{(datos.prestadores?.items ?? []).slice(0, 3).map((p: any) => <ProviderCard key={p.id} prestador={p} onClick={() => { seleccionar({ prestadorId: p.id, busquedaId: undefined }); setScreen("provider") }} />)}</div>}
       </section>
     </>}</Consulta>
   </AppContent>
 }
 
 function Results({ setScreen }: { setScreen: (s: Screen) => void }) {
-  const { seleccion, seleccionar } = useSesion()
+  const { sesion, seleccion, seleccionar } = useSesion()
   const [orden, setOrden] = useState<"calificacion" | "tarifa">("calificacion")
-  const catalogo = useDatos(() => api.bffCatalogo({ categoriaId: seleccion.categoriaId }), [seleccion.categoriaId ?? "todas"])
+  // Ver resultados es ejecutar una búsqueda: queda registrada en Mercado y, si
+  // de aquí sale un contacto, la cita como origen (tasa de contacto tras búsqueda).
+  const demandanteId = sesion?.perfilDemandante?.id
+  const catalogo = useDatos(
+    () => demandanteId
+      ? api.buscar(demandanteId, { categoriaId: seleccion.categoriaId })
+      : api.bffCatalogo({ categoriaId: seleccion.categoriaId }).then(datos => ({ ...datos, busqueda: null })),
+    [seleccion.categoriaId ?? "todas", demandanteId ?? "anonimo"],
+  )
 
   return <AppContent>
     <PageHeader title="Resultados" subtitle={catalogo.datos ? `${catalogo.datos.prestadores?.total ?? 0} prestadores disponibles` : "Cargando…"} onBack={() => setScreen("search")} />
@@ -386,7 +394,7 @@ function Results({ setScreen }: { setScreen: (s: Screen) => void }) {
       const lista = [...(datos.prestadores?.items ?? [])].sort((a: any, b: any) =>
         orden === "tarifa" ? a.tarifaReferencialBase - b.tarifaReferencialBase : b.calificacionPromedio - a.calificacionPromedio)
       if (!lista.length) return <EmptyState title="No encontramos prestadores" text="Prueba ampliando el radio de búsqueda o cambia tus filtros." action="Volver a buscar" onClick={() => setScreen("search")} />
-      return <div className="provider-list">{lista.map((p: any) => <ProviderCard key={p.id} prestador={p} onClick={() => { seleccionar({ prestadorId: p.id }); setScreen("provider") }} />)}</div>
+      return <div className="provider-list">{lista.map((p: any) => <ProviderCard key={p.id} prestador={p} onClick={() => { seleccionar({ prestadorId: p.id, busquedaId: datos.busqueda?.id }); setScreen("provider") }} />)}</div>
     }}</Consulta>
   </AppContent>
 }
@@ -404,7 +412,7 @@ function ProviderProfile({ setScreen }: { setScreen: (s: Screen) => void }) {
     if (!demandanteId || !seleccion.prestadorId) return
     setContactando(true); setError(null)
     try {
-      const { conversacion } = await api.contactar(demandanteId, seleccion.prestadorId)
+      const { conversacion } = await api.contactar(demandanteId, seleccion.prestadorId, seleccion.busquedaId)
       seleccionar({ conversacionId: conversacion.id })
       setScreen("chat")
     } catch (e) {
@@ -1218,7 +1226,6 @@ function Checkin({ setScreen }: { setScreen: (s: Screen) => void }) {
   const detalle = useDatos(() => api.bffContratacion(seleccion.contratacionId!), [seleccion.contratacionId], { cadaMs: EN_VIVO_MS })
   const [marcando, setMarcando] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [cobro, setCobro] = useState<{ monto: number; saldo: number } | null>(null)
 
   // El prestador no ve la línea de etapas del demandante: solo los dos botones
   // que le tocan. Marcar la salida es además lo que dispara el cobro, porque
@@ -1231,8 +1238,7 @@ function Checkin({ setScreen }: { setScreen: (s: Screen) => void }) {
       if (accion === "in") {
         await api.checkIn(seleccion.contratacionId)
       } else {
-        const { cobro: resultado } = await api.checkOut(seleccion.contratacionId)
-        if (resultado) setCobro({ monto: Math.abs(resultado.movimiento.monto), saldo: resultado.billetera.saldoPendiente })
+        await api.checkOut(seleccion.contratacionId)
       }
       detalle.recargar()
     } catch (e) {
@@ -1266,9 +1272,8 @@ function Checkin({ setScreen }: { setScreen: (s: Screen) => void }) {
         <p className="fine-print">Este porcentaje se fijó al cerrar el acuerdo y ya no cambia, aunque cambies de plan durante el servicio.</p>
 
         {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
-        {cobro && <div className="alert-box info"><WalletCards /><p><strong>Comisión cargada a tu billetera: {pesos(cobro.monto)}.</strong><br />El pago fue en efectivo, así que lo cobras tú y nos liquidas la comisión. Saldo pendiente: {pesos(cobro.saldo)}.</p></div>}
-        {/* Con Pub/Sub el check-out no trae el cobro: se sigue el evento en vivo. */}
-        {c.checkOut && !cobro && c.medioPago === "EFECTIVO" && <SeguimientoCobro contratacionId={c.id} setScreen={setScreen} />}
+        {/* El check-out no trae el cobro: llega por el evento y se sigue en vivo. */}
+        {c.checkOut && c.medioPago === "EFECTIVO" && <SeguimientoCobro contratacionId={c.id} setScreen={setScreen} />}
 
         {!c.checkIn && <Button onClick={() => marcar("in")} disabled={marcando}>
           {marcando ? <><Loader2 className="spin" /> Registrando…</> : <>Hacer check-in <Check data-icon="inline-end" /></>}
@@ -1462,9 +1467,7 @@ function MonitorPubSub() {
   return <section className="admin-list-card pubsub-monitor">
     <div className="section-heading">
       <div><span className="eyebrow">PUB/SUB · CONTRATACION_COMPLETADA</span><h2>Cobro de comisiones por eventos</h2></div>
-      {estado.datos && (estado.datos.modo === "EVENTOS"
-        ? <Badge tone="success">En vivo</Badge>
-        : <Badge tone="warning">Modo síncrono</Badge>)}
+      {estado.datos && <Badge tone="success">En vivo</Badge>}
     </div>
     <Consulta estado={estado} filas={1}>{({ productor: p, consumidor: c }) => {
       const colas = c?.colas

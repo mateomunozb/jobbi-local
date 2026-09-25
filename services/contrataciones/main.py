@@ -19,10 +19,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from common import eventos
 from common.db import condiciones, inicializar, nuevo_id, paginar_consulta
 from common.enums import EstadoContratacion, MedioPago, valores
+from common.observabilidad import evento_negocio, registrar_metricas
 from common.service import crear_servicio, resumen_latencias
 
+from .estados import TransicionInvalida, estado_de
 from .models import AcuerdoTarifa, Contratacion, EventoOutbox
-from .outbox import RelayOutbox, registrar_evento
+from .outbox import RelayOutbox
+from .repositorio import RepositorioContrataciones
 from .tablas import AcuerdoTarifaFila, ContratacionFila, EventoOutboxFila
 
 app = crear_servicio(
@@ -57,6 +60,37 @@ def sesion() -> Session:
 
 
 relay = RelayOutbox(Sesion)
+
+
+def _metricas_de_negocio():
+    ahora = datetime.now()
+    with Sesion() as s:
+        facturado = s.scalar(select(func.coalesce(func.sum(ContratacionFila.montoComision), 0)).where(
+            ContratacionFila.estado == EstadoContratacion.COMPLETADA.value,
+            ContratacionFila.medioPago == MedioPago.EFECTIVO.value,
+        )) or 0
+        por_estado = s.execute(
+            select(ContratacionFila.estado, func.count()).group_by(ContratacionFila.estado)
+        ).all()
+        pendientes, mas_antiguo = s.execute(
+            select(func.count(), func.min(EventoOutboxFila.fechaCreacion))
+            .where(EventoOutboxFila.estado == "PENDIENTE")
+        ).one()
+    muestras = [
+        ("jobbi_comisiones_facturadas_efectivo_pesos",
+         "Comisiones de contrataciones completadas pagadas en efectivo (denominador del recaudo)",
+         {}, facturado),
+        ("jobbi_outbox_pendientes", "Eventos en el outbox aún sin publicar en SNS",
+         {"productor": "contrataciones"}, pendientes),
+        ("jobbi_outbox_pendiente_mas_antiguo_segundos", "Edad del evento pendiente más antiguo",
+         {"productor": "contrataciones"}, (ahora - mas_antiguo).total_seconds() if mas_antiguo else 0),
+    ]
+    muestras += [("jobbi_contrataciones", "Contrataciones por estado", {"estado": estado}, n)
+                 for estado, n in por_estado]
+    return muestras
+
+
+registrar_metricas(_metricas_de_negocio)
 
 
 @app.on_event("startup")
@@ -148,14 +182,14 @@ def alta_acuerdo(peticion: AltaAcuerdo, s: Session = Depends(sesion)):
 @app.post("/acuerdos/{acuerdo_id}/aceptar", tags=["acuerdos"],
           summary="Aceptar la tarifa propuesta; si aceptan ambos, nace la contratación")
 def aceptar_acuerdo(acuerdo_id: str, peticion: AceptacionAcuerdo, s: Session = Depends(sesion)):
-    acuerdo = _acuerdo_o_404(s, acuerdo_id)
+    repo = RepositorioContrataciones(s)
+    acuerdo = repo.acuerdo(acuerdo_id)
+    if acuerdo is None:
+        raise HTTPException(404, f"AcuerdoTarifa '{acuerdo_id}' no encontrado")
     if acuerdo.estado == "ACEPTADO":
         # Idempotente: dos toques al botón no crean dos servicios.
-        contratacion = s.get(ContratacionFila, acuerdo.contratacionId)
-        return {
-            "acuerdo": AcuerdoTarifa.model_validate(acuerdo),
-            "contratacion": Contratacion.model_validate(contratacion) if contratacion else None,
-        }
+        contratacion = repo.contratacion(acuerdo.contratacionId) if acuerdo.contratacionId else None
+        return {"acuerdo": acuerdo, "contratacion": contratacion}
     if acuerdo.estado != "PENDIENTE":
         raise HTTPException(409, f"El acuerdo ya está '{acuerdo.estado}'")
 
@@ -173,28 +207,24 @@ def aceptar_acuerdo(acuerdo_id: str, peticion: AceptacionAcuerdo, s: Session = D
         acuerdo.porcentajeComisionCongelado = peticion.porcentajeComision
         acuerdo.planPrestadorAlAcordar = peticion.planPrestador
 
-        contratacion = ContratacionFila(
+        contratacion = Contratacion(
             id=nuevo_id(),
             demandanteId=acuerdo.demandanteId,
             prestadorId=acuerdo.prestadorId,
             oficioId=acuerdo.oficioId,
             fechaSolicitud=date.today(),
-            fechaEjecucion=None,
-            estado=EstadoContratacion.ACEPTADA.value,
+            estado=EstadoContratacion.ACEPTADA,
             valorAcordado=acuerdo.valorPropuesto,
             medioPago=acuerdo.medioPago,
             porcentajeComisionAplicado=peticion.porcentajeComision,
             montoComision=round(acuerdo.valorPropuesto * peticion.porcentajeComision, 2),
         )
-        s.add(contratacion)
-        s.flush()
+        repo.agregar(contratacion)
         acuerdo.contratacionId = contratacion.id
 
+    repo.guardar_acuerdo(acuerdo)
     s.commit()
-    return {
-        "acuerdo": AcuerdoTarifa.model_validate(acuerdo),
-        "contratacion": Contratacion.model_validate(contratacion) if contratacion else None,
-    }
+    return {"acuerdo": acuerdo, "contratacion": contratacion}
 
 
 @app.post("/acuerdos/{acuerdo_id}/rechazar", tags=["acuerdos"],
@@ -247,59 +277,58 @@ def obtener_acuerdo(acuerdo_id: str, s: Session = Depends(sesion)):
 
 # --- Ejecución del servicio ------------------------------------------------
 
-def _contratacion_o_404(s: Session, contratacion_id: str) -> ContratacionFila:
-    fila = s.get(ContratacionFila, contratacion_id)
-    if fila is None:
+def _contratacion_de(repo: RepositorioContrataciones, contratacion_id: str) -> Contratacion:
+    contratacion = repo.contratacion(contratacion_id)
+    if contratacion is None:
         raise HTTPException(404, f"Contratacion '{contratacion_id}' no encontrada")
-    return fila
+    return contratacion
 
 
 @app.post("/contrataciones/{contratacion_id}/check-in", tags=["ejecución"],
           summary="El prestador marca su llegada y el servicio empieza")
 def check_in(contratacion_id: str, s: Session = Depends(sesion)):
-    fila = _contratacion_o_404(s, contratacion_id)
-    if fila.checkIn is not None:
-        return Contratacion.model_validate(fila)
-    if fila.estado not in (EstadoContratacion.SOLICITADA.value, EstadoContratacion.ACEPTADA.value):
-        raise HTTPException(409, f"No se puede hacer check-in con la contratación en '{fila.estado}'")
-
-    fila.checkIn = datetime.now()
-    fila.fechaEjecucion = date.today()
-    fila.estado = EstadoContratacion.CHECK_IN.value
+    repo = RepositorioContrataciones(s)
+    c = _contratacion_de(repo, contratacion_id)
+    if c.checkIn is not None:
+        return c
+    try:
+        estado_de(c).iniciar(c)
+    except TransicionInvalida as e:
+        raise HTTPException(409, str(e)) from e
+    repo.guardar(c)
     s.commit()
-    return Contratacion.model_validate(fila)
+    return c
 
 
 @app.post("/contrataciones/{contratacion_id}/check-out", tags=["ejecución"],
           summary="El prestador cierra el servicio, que queda completado")
 def check_out(contratacion_id: str, s: Session = Depends(sesion)):
-    fila = _contratacion_o_404(s, contratacion_id)
-    if fila.checkOut is not None:
-        return Contratacion.model_validate(fila)
-    if fila.checkIn is None:
-        raise HTTPException(409, "Hay que hacer check-in antes de cerrar el servicio")
-
-    fila.checkOut = datetime.now()
-    # El check-out es el cierre del trabajo: no queda ningún paso intermedio
-    # entre marcar la salida y dar el servicio por completado.
-    fila.estado = EstadoContratacion.COMPLETADA.value
+    repo = RepositorioContrataciones(s)
+    c = _contratacion_de(repo, contratacion_id)
+    if c.checkOut is not None:
+        return c
+    try:
+        estado_de(c).completar(c)
+    except TransicionInvalida as e:
+        raise HTTPException(409, str(e)) from e
+    repo.guardar(c)
 
     # Transactional Outbox: el evento se guarda en la misma transacción que el
     # cierre. Monetización lo recibirá por SNS → SQS y cobrará la comisión; este
     # contexto no sabe (ni necesita saber) quién lo consume.
-    registrar_evento(s, eventos.CONTRATACION_COMPLETADA, fila.id, {
-        "contratacionId": fila.id,
-        "prestadorId": fila.prestadorId,
-        "demandanteId": fila.demandanteId,
-        "oficioId": fila.oficioId,
-        "valorAcordado": fila.valorAcordado,
-        "medioPago": fila.medioPago,
-        "porcentajeComisionAplicado": fila.porcentajeComisionAplicado,
-        "montoComision": fila.montoComision,
-        "fechaCheckOut": fila.checkOut.isoformat(),
+    repo.registrar_evento(eventos.CONTRATACION_COMPLETADA, c.id, {
+        "contratacionId": c.id,
+        "prestadorId": c.prestadorId,
+        "demandanteId": c.demandanteId,
+        "oficioId": c.oficioId,
+        "valorAcordado": c.valorAcordado,
+        "medioPago": c.medioPago.value,
+        "porcentajeComisionAplicado": c.porcentajeComisionAplicado,
+        "montoComision": c.montoComision,
+        "fechaCheckOut": c.checkOut.isoformat(),
         # Forma que ya entendía el consumidor original.
-        "monto": fila.montoComision,
-        "servicio_id": fila.id,
+        "monto": c.montoComision,
+        "servicio_id": c.id,
     })
     try:
         s.commit()
@@ -307,10 +336,13 @@ def check_out(contratacion_id: str, s: Session = Depends(sesion)):
         # Otro check-out simultáneo de la misma contratación ganó la carrera y
         # ya dejó su evento: se devuelve el estado que quedó guardado.
         s.rollback()
-        return Contratacion.model_validate(_contratacion_o_404(s, contratacion_id))
+        return _contratacion_de(repo, contratacion_id)
 
     relay.despertar()
-    return Contratacion.model_validate(fila)
+    evento_negocio("contratacion_completada", "Servicio cerrado; evento guardado en el outbox",
+                   contratacionId=c.id, prestadorId=c.prestadorId, medioPago=c.medioPago.value,
+                   montoComision=c.montoComision)
+    return c
 
 
 # --- Outbox (observabilidad del Pub/Sub) -----------------------------------

@@ -16,10 +16,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from common.db import condiciones, inicializar, listar, nuevo_id, paginar_consulta
 from common.enums import EstadoModeracion, EstadoVerificacion, valores
+from common.observabilidad import registrar_metricas
 from common.service import crear_servicio
 
+from . import verificacion
 from .models import AliadoVerificacion, Resena, VerificacionIdentidad
-from .tablas import AliadoVerificacionFila, ResenaFila, VerificacionIdentidadFila
+from .tablas import AliadoVerificacionFila, ResenaFila, SujetoVerificacionFila, VerificacionIdentidadFila
 
 app = crear_servicio(
     nombre="confianza",
@@ -117,8 +119,11 @@ def estado_verificacion(prestador_id: str, s: Session = Depends(sesion)):
                VerificacionIdentidadFila.estado == EstadoVerificacion.APROBADA.value)
     ).all()
 
+    sujeto = s.get(SujetoVerificacionFila, prestador_id)
     return {
         "prestadorId": prestador_id,
+        # Veredicto global (PENDIENTE, APROBADA, RECHAZADA o SIN_SOLICITUD).
+        "estado": sujeto.estado if sujeto else "SIN_SOLICITUD",
         "totalVerificaciones": total,
         "aprobadas": aprobadas,
         "pendientes": pendientes,
@@ -128,6 +133,45 @@ def estado_verificacion(prestador_id: str, s: Session = Depends(sesion)):
         "costoAcumulado": float(costo),
         "tiposAprobados": sorted(tipos),
     }
+
+
+class SolicitudVerificacion(BaseModel):
+    # Solo hace falta la primera vez (al registrarse); después Confianza ya lo tiene.
+    documento: str | None = Field(default=None, min_length=4, max_length=30)
+
+
+@app.post("/prestadores/{prestador_id}/verificacion", tags=["verificaciones"],
+          summary="Verificar al prestador con el aliado externo (Adapter + Circuit Breaker)")
+def verificar_prestador(prestador_id: str, peticion: SolicitudVerificacion | None = None,
+                        s: Session = Depends(sesion)):
+    """Solicita la verificación (RN-01). La llama el gateway al registrar al prestador.
+
+    Con veredicto vigente no se consulta al aliado. Si el aliado falla o el
+    circuito está abierto, se responde al instante con el estado que haya
+    (PENDIENTE para un prestador nuevo) y `degradado: true`; el reverificador
+    de fondo lo reintentará.
+    """
+    try:
+        sujeto, origen = verificacion.solicitar(s, prestador_id, peticion.documento if peticion else None)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return verificacion.resumen(sujeto, origen)
+
+
+def _metricas_de_negocio():
+    with Sesion() as s:
+        por_estado = s.execute(select(SujetoVerificacionFila.estado, func.count())
+                               .group_by(SujetoVerificacionFila.estado)).all()
+    return [("jobbi_prestadores_verificacion", "Prestadores por estado de verificación (RN-01)",
+             {"estado": estado}, n) for estado, n in por_estado]
+
+
+registrar_metricas(_metricas_de_negocio)
+
+
+@app.on_event("startup")
+def _arrancar_reverificador() -> None:
+    verificacion.iniciar_reverificador(Sesion)
 
 
 # --- Reseñas ---------------------------------------------------------------

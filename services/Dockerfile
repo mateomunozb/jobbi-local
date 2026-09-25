@@ -25,6 +25,10 @@ COPY monetizacion/ ./monetizacion/
 COPY soporte/ ./soporte/
 COPY adquisicion/ ./adquisicion/
 COPY proteccion/ ./proteccion/
+# Doble de prueba del aliado de verificación (Fallo 1); no es un contexto de dominio.
+COPY verificacion_externa/ ./verificacion_externa/
+# Simulación del auto-escalado de Aurora Serverless v2 (Fallo 3); tampoco es un contexto de dominio.
+COPY escalador_bd/ ./escalador_bd/
 
 # Se sobrescriben por Deployment; los valores por defecto levantan el gateway.
 ENV SERVICE_MODULE=gateway \
@@ -32,4 +36,6 @@ ENV SERVICE_MODULE=gateway \
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "exec uvicorn ${SERVICE_MODULE}.main:app --host 0.0.0.0 --port ${PORT}"]
+# Sin access log de uvicorn: el middleware de observabilidad ya escribe cada
+# petición como JSON (con traceId, ruta y duración).
+CMD ["sh", "-c", "exec uvicorn ${SERVICE_MODULE}.main:app --host 0.0.0.0 --port ${PORT} --no-access-log"]

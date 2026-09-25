@@ -86,9 +86,16 @@ spec:
             command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
           initialDelaySeconds: 30
           periodSeconds: 20
+        # Capacidad mínima (0,5 ACU). El escalador (k8s/escalador-bd.yaml) la
+        # sube y la baja en caliente según la saturación; NotRequired = cambiar
+        # CPU o memoria no reinicia el contenedor. Si el Pod se reinicia, vuelve
+        # a estos valores.
+        resizePolicy:
+        - { resourceName: cpu, restartPolicy: NotRequired }
+        - { resourceName: memory, restartPolicy: NotRequired }
         resources:
           requests: { cpu: "100m", memory: "256Mi" }
-          limits: { cpu: "700m", memory: "640Mi" }
+          limits: { cpu: "500m", memory: "640Mi" }
       volumes:
       - name: init
         configMap:

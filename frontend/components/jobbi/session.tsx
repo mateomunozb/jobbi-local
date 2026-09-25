@@ -10,6 +10,8 @@ export type Seleccion = {
   contratacionId?: string
   conversacionId?: string
   categoriaId?: string
+  /** Búsqueda de la que salió el prestador elegido: el contacto la cita como origen. */
+  busquedaId?: string
 }
 
 type Contexto = {
