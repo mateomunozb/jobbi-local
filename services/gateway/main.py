@@ -26,6 +26,7 @@ from fastapi import HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse
 
 from common import eventos
+from common.cobertura import en_cobertura
 from common.observabilidad import cabeceras_de_traza, log, muestras_de_colas, registrar_metricas
 from common.service import crear_servicio
 
@@ -707,6 +708,24 @@ async def _exigir_prestador_verificado(prestador_id: str) -> dict | None:
     return {"estado": estado}
 
 
+async def _exigir_cobertura(demandante_id: str, prestador_id: str) -> None:
+    """RN-09: toda contratación de la Fase 1 ocurre dentro del Valle de Aburrá.
+
+    El municipio de cada parte vive en su perfil (Identidad). Si Identidad no
+    responde se deja pasar, como en las demás reglas: el registro ya validó la
+    cobertura, así que un perfil fuera de ella solo existiría por datos viejos.
+    """
+    demandante, prestador = await asyncio.gather(
+        _pedir("identidad", f"/demandantes/{demandante_id}"),
+        _pedir("identidad", f"/prestadores/{prestador_id}"),
+    )
+    for rol, perfil in (("demandante", demandante), ("prestador", prestador)):
+        municipio = ((perfil or {}).get("ubicacionPrincipal") or {}).get("municipio")
+        if perfil is not None and not en_cobertura(municipio):
+            raise HTTPException(409, f"El {rol} está en '{municipio}', fuera del Valle de Aburrá (RN-09): "
+                                     "la Fase 1 no admite contrataciones allí")
+
+
 @app.get("/api/bff/comision-vigente/{prestador_id}", tags=["bff"],
          summary="Comisión que se congelaría hoy para este prestador")
 async def bff_comision_vigente(prestador_id: str):
@@ -743,6 +762,7 @@ async def bff_proponer_acuerdo(cuerpo: dict):
                                      "termínalo y califícalo antes de acordar uno nuevo")
     await _exigir_billetera_al_dia(prestador_id)
     await _exigir_prestador_verificado(prestador_id)
+    await _exigir_cobertura(demandante_id, prestador_id)
 
     oficio_id = cuerpo.get("oficioId")
     valor = cuerpo.get("valorPropuesto")
@@ -987,6 +1007,25 @@ async def bff_incidente(cuerpo: dict):
         raise HTTPException(409, f"No se puede reportar un incidente con el servicio en "
                                  f"'{contratacion['estado']}'")
     return await _enviar("soporte", "/incidentes", cuerpo)
+
+
+@app.post("/api/bff/incidentes/{incidente_id}/investigar", tags=["bff"],
+          summary="Pasar un incidente a investigación con la evidencia de su contratación")
+async def bff_investigar_incidente(incidente_id: str, cuerpo: dict | None = None):
+    """RN-10: el check-in/check-out es de Contrataciones y la regla de Soporte.
+
+    Aquí solo se juntan: se lee la contratación del incidente y se le manda a
+    Soporte qué quedó registrado, junto con la denuncia formal si la hay.
+    """
+    incidente = await _pedir("soporte", f"/incidentes/{incidente_id}")
+    if incidente is None:
+        raise HTTPException(404, f"Incidente '{incidente_id}' no encontrado")
+    contratacion = await _pedir("contrataciones", f"/contrataciones/{incidente['contratacionId']}") or {}
+    return await _enviar("soporte", f"/incidentes/{incidente_id}/investigar", {
+        "checkInRegistrado": contratacion.get("checkIn") is not None,
+        "checkOutRegistrado": contratacion.get("checkOut") is not None,
+        "denunciaFormal": (cuerpo or {}).get("denunciaFormal"),
+    })
 
 
 @app.post("/api/bff/prestadores/{prestador_id}/plan", tags=["bff"],

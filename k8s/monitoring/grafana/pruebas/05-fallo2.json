@@ -421,7 +421,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"})",
+          "expr": "sum by (container) ((container_memory_working_set_bytes{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"} and on (id) (container_start_time_seconds{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"} == on (namespace, pod, container) group_left () max by (namespace, pod, container) (container_start_time_seconds{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"}))))",
           "legendFormat": "{{container}}",
           "refId": "A",
           "range": true

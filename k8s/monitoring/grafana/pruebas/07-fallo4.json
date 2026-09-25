@@ -21,7 +21,7 @@
       "title": "Qué es esta prueba",
       "options": {
         "mode": "markdown",
-        "content": "**Comando:** `./scripts/caos/fallo4-oomkilled.sh`  \n**Caso del documento:** Punto 11 · Fallo 4 (Recursos / OOMKilled).\n\n**Qué deberías ver:** la memoria de monetización sube en rampa hacia el 100 % del límite (256 Mi) y cae; OOMKilled pasa a 1; los reinicios de monetización suben en 1; la cola tiene un pequeño pico que se drena. Todo ocurre en ~7 s: puede verse solo parte de la rampa.\n\n**Criterio de éxito:** la bitácora dice «Última terminación del contenedor: OOMKilled», el contenedor vuelve e integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
+        "content": "**Comando:** `./scripts/caos/fallo4-oomkilled.sh`  \n**Caso del documento:** Punto 11 · Fallo 4 (Recursos / OOMKilled).\n\n**Qué deberías ver:** la memoria de monetización sube en rampa (~45 s) hasta el 100 % del límite (256 Mi) y cae: OOMKilled pasa a 1. La fuga se repite al arrancar y Kubernetes espera cada vez más para reiniciarlo (CrashLoopBackOff): los reinicios suben a 3 y el consumidor queda fuera ~30 s. Mientras tanto los publicados siguen (~2/s), los consumidos caen a 0 y los mensajes **visibles** de la cola de Monetización suben (~50); al volver el contenedor se drenan de golpe. Lo que el worker tenía en la mano al morir queda **en vuelo** 30 s y luego se cobra (DUPLICADO solo si ya estaba cobrado; lo normal es 0).\n\n**Criterio de éxito:** la bitácora dice «OOMKilled», el pico de visibles se drena a 0, DLQ = 0 e integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
       },
       "id": 1,
       "gridPos": {
@@ -45,7 +45,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (container) (100 * sum by (namespace, pod, container) (container_memory_working_set_bytes{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"}) / on (namespace, pod, container) sum by (namespace, pod, container) (kube_pod_container_resource_limits{namespace=\"aws-local\", resource=\"memory\", container=~\"monetizacion\"}))",
+          "expr": "max by (container) (100 * sum by (namespace, pod, container) ((container_memory_working_set_bytes{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"} and on (id) (container_start_time_seconds{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"} == on (namespace, pod, container) group_left () max by (namespace, pod, container) (container_start_time_seconds{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"})))) / on (namespace, pod, container) sum by (namespace, pod, container) (kube_pod_container_resource_limits{namespace=\"aws-local\", resource=\"memory\", container=~\"monetizacion\"}))",
           "legendFormat": "{{container}}",
           "refId": "A",
           "range": true
@@ -97,8 +97,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Uso de memoria por servicio (working set)",
-      "description": "Una curva por servicio, aunque su Pod se haya reemplazado.",
+      "title": "Cola de Monetización · visibles vs. en vuelo",
+      "description": "visibles: esperan a un consumidor (suben mientras no hay Pod). en_vuelo: entregados a un worker y aún sin confirmar; si ese worker murió, reaparecen como visibles al vencer el VisibilityTimeout (30 s). La mide el gateway, así que no se corta cuando muere el Pod de Monetización.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -109,15 +109,29 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"})",
-          "legendFormat": "{{container}}",
+          "expr": "max by (estado) (jobbi_sqs_mensajes{cola=\"monetizacion-events-queue\"})",
+          "legendFormat": "{{estado}}",
           "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(jobbi_sqs_mensajes{cola=\"monetizacion-events-dlq\", estado=\"visibles\"})",
+          "legendFormat": "DLQ",
+          "refId": "B",
           "range": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes"
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60
+          }
         },
         "overrides": []
       },
@@ -197,7 +211,7 @@
       "id": 4,
       "gridPos": {
         "h": 7,
-        "w": 6,
+        "w": 5,
         "x": 0,
         "y": 14
       }
@@ -242,15 +256,15 @@
       "id": 5,
       "gridPos": {
         "h": 7,
-        "w": 9,
-        "x": 6,
+        "w": 7,
+        "x": 5,
         "y": 14
       }
     },
     {
       "type": "timeseries",
-      "title": "Saturación · mensajes en colas SQS",
-      "description": "Mensajes esperando en cada cola. Las *-dlq deben quedarse en 0.",
+      "title": "Flujo del cobro · publicados en SNS vs. consumidos (por minuto)",
+      "description": "Si los publicados siguen y los consumidos caen a 0, la diferencia es lo que se acumula en la cola; al volver el consumidor aparece un pico que la drena.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -261,9 +275,19 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (cola) (jobbi_sqs_mensajes{estado=\"visibles\"})",
-          "legendFormat": "{{cola}}",
+          "expr": "sum(rate(jobbi_eventos_publicados_total{tema=\"contratacion-completada-topic\"}[30s])) * 60",
+          "legendFormat": "publicados por el outbox de Contrataciones",
           "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(jobbi_eventos_consumidos_total{consumidor=\"monetizacion\"}[30s])) * 60",
+          "legendFormat": "consumidos por Monetización",
+          "refId": "B",
           "range": true
         }
       ],
@@ -287,8 +311,8 @@
       "id": 6,
       "gridPos": {
         "h": 7,
-        "w": 9,
-        "x": 15,
+        "w": 12,
+        "x": 12,
         "y": 14
       }
     },
@@ -332,8 +356,70 @@
       "id": 7,
       "gridPos": {
         "h": 7,
-        "w": 24,
+        "w": 18,
         "x": 0,
+        "y": 21
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Eventos en Dead Letter Queue",
+      "description": "Mensajes apartados tras 5 intentos. Meta = 0; > 0 es alerta P2.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "jobbi:eventos_en_dlq",
+          "legendFormat": "DLQ",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 8,
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
         "y": 21
       }
     }

@@ -112,14 +112,14 @@ en las dos DLQ. Es de solo lectura y se puede correr en cualquier momento.
 
 ### Fallo 4 · Recursos: OOMKilled
 
-`./scripts/caos/fallo4-oomkilled.sh` (~5 min, 12 TPS)
+`./scripts/caos/fallo4-oomkilled.sh` (~7 min, 12 TPS)
 
 | | |
 |---|---|
-| Inyección | Un proceso reserva 8 MiB cada 0,3 s dentro del contenedor de Monetización (`kubectl exec`), en el mismo cgroup, hasta el límite de **256 Mi** |
-| Mecanismo | cgroup v2 con `memory.oom.group=1`: el kernel mata el contenedor entero → `lastState.terminated.reason = OOMKilled` → Kubernetes lo reinicia |
-| Hipótesis | El fallo queda contenido en ese Pod; los eventos esperan en SQS y se cobran al volver; sin pérdidas ni dobles cobros |
-| Evidencia | *Memoria · % del límite* (rampa hasta 100 % y caída), *Reinicios*, *OOMKilled* = 1, alerta `ContenedorOOMKilled`; eventos de Kubernetes en la bitácora |
+| Inyección | Un proceso reserva 4 MiB por segundo dentro del contenedor de Monetización (`kubectl exec`), en el mismo cgroup, hasta el límite de **256 Mi** (~45 s). Luego la fuga se reinyecta en cada arranque hasta cumplir `CAIDA` (30 s por defecto) |
+| Mecanismo | cgroup v2 con `memory.oom.group=1`: el kernel mata el contenedor entero → `lastState.terminated.reason = OOMKilled` → Kubernetes lo reinicia en el mismo Pod, con espera creciente (CrashLoopBackOff) si vuelve a morir |
+| Hipótesis | El fallo queda contenido en ese Pod; los eventos se encolan en SQS mientras no hay consumidor y se cobran al volver; sin pérdidas ni dobles cobros; DLQ = 0 |
+| Evidencia | *Memoria · % del límite* (rampa hasta 100 % y caída), *Cola de Monetización · visibles vs. en vuelo* (sube y se drena), *Flujo del cobro*, *Reinicios* (+3), *OOMKilled* = 1, alerta `ContenedorOOMKilled`; eventos `BackOff` de Kubernetes en la bitácora |
 
 ## 3. Plantilla de análisis (por experimento)
 

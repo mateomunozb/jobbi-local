@@ -89,8 +89,20 @@ def _filtro(contenedores: str | None) -> str:
     return f'{NS}, container!="", container!="POD"' + (f', container=~"{contenedores}"' if contenedores else "")
 
 
+def _memoria_viva(filtro):
+    """Working set solo del contenedor más reciente de cada Pod.
+
+    Tras un reinicio en el mismo Pod (OOMKilled), cAdvisor sigue exportando ~5 min
+    la serie del contenedor muerto congelada en su último valor; sumarla con la del
+    nuevo daba memoria doble. Se queda la serie cuyo `id` tiene el inicio más reciente.
+    """
+    inicio = f"container_start_time_seconds{{{filtro}}}"
+    return (f"(container_memory_working_set_bytes{{{filtro}}} and on (id) ({inicio}"
+            f" == on (namespace, pod, container) group_left () max by (namespace, pod, container) ({inicio})))")
+
+
 def mem(contenedores=None):
-    return f'sum by (container) (container_memory_working_set_bytes{{{_filtro(contenedores)}}})'
+    return f'sum by (container) ({_memoria_viva(_filtro(contenedores))})'
 
 
 def cpu(contenedores=None):
@@ -99,12 +111,13 @@ def cpu(contenedores=None):
 
 
 def pct_limite(recurso, contenedores=None):
-    uso = ("container_memory_working_set_bytes" if recurso == "memory"
-           else "node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate")
-    filtro = _filtro(contenedores) if recurso == "memory" else f'{NS}' + (
-        f', container=~"{contenedores}"' if contenedores else "")
+    if recurso == "memory":
+        uso = _memoria_viva(_filtro(contenedores))
+    else:
+        f = f'{NS}' + (f', container=~"{contenedores}"' if contenedores else "")
+        uso = f"node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate{{{f}}}"
     lim = f'{NS}, resource="{recurso}"' + (f', container=~"{contenedores}"' if contenedores else "")
-    return (f'max by (container) (100 * sum by (namespace, pod, container) ({uso}{{{filtro}}})'
+    return (f'max by (container) (100 * sum by (namespace, pod, container) ({uso})'
             f' / on (namespace, pod, container) sum by (namespace, pod, container)'
             f' (kube_pod_container_resource_limits{{{lim}}}))')
 
@@ -431,13 +444,16 @@ PRUEBAS = [
       [(P["consumidos"](), 12, 7), (P["reinicios"](), 8, 7), (P["dlq"](), 4, 7)]]),
     ("07-fallo4", "7 · Fallo 4 · Recursos: OOMKilled en Monetización", "./scripts/caos/fallo4-oomkilled.sh",
      "Punto 11 · Fallo 4 (Recursos / OOMKilled).",
-     "la memoria de monetización sube en rampa hacia el 100 % del límite (256 Mi) y cae; OOMKilled pasa a 1; los reinicios "
-     "de monetización suben en 1; la cola tiene un pequeño pico que se drena. Todo ocurre en ~7 s: puede verse solo parte de "
-     "la rampa.",
-     "la bitácora dice «Última terminación del contenedor: OOMKilled», el contenedor vuelve e integridad OK.",
-     [[(P["mem_pct_serie"]("monetizacion"), 12, 8), (P["mem"]("monetizacion"), 12, 8)],
-      [(P["oom"](), 6, 7), (P["reinicios"]("monetizacion"), 9, 7), (P["colas"](), 9, 7)],
-      [(P["consumidos"](), 24, 7)]]),
+     "la memoria de monetización sube en rampa (~45 s) hasta el 100 % del límite (256 Mi) y cae: OOMKilled pasa a 1. "
+     "La fuga se repite al arrancar y Kubernetes espera cada vez más para reiniciarlo (CrashLoopBackOff): los reinicios "
+     "suben a 3 y el consumidor queda fuera ~30 s. Mientras tanto los publicados siguen (~2/s), los consumidos caen a 0 y "
+     "los mensajes **visibles** de la cola de Monetización suben (~50); al volver el contenedor se drenan de golpe. Lo que "
+     "el worker tenía en la mano al morir queda **en vuelo** 30 s y luego se cobra (DUPLICADO solo si ya estaba cobrado; "
+     "lo normal es 0).",
+     "la bitácora dice «OOMKilled», el pico de visibles se drena a 0, DLQ = 0 e integridad OK.",
+     [[(P["mem_pct_serie"]("monetizacion"), 12, 8), (P["cola_monetizacion"](), 12, 8)],
+      [(P["oom"](), 5, 7), (P["reinicios"]("monetizacion"), 7, 7), (P["flujo_cobro"](), 12, 7)],
+      [(P["consumidos"](), 18, 7), (P["dlq"](), 6, 7)]]),
     ("08-estres", "8 · Estrés · punto de quiebre 75 → 350 TPS", "./scripts/caos/estres-punto-de-quiebre.sh",
      "Punto 10.4 · Escenario 3 Estrés y Rúbrica Punto 3 (punto de quiebre).",
      "escalones en Rate que se «aplanan» en el máximo que el sistema alcanza; qué servicio llega primero al 100 % de CPU "

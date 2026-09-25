@@ -734,37 +734,48 @@ cobrados tras la recuperación: 20`, integridad OK, DLQ = 0 y 0 reinicios.
 |---|---|
 | **Comando** | `./scripts/caos/fallo4-oomkilled.sh` |
 | **Caso del documento** | **Punto 11 · Fallo 4 (Recursos / OOMKilled por límite de memoria)**: consumo progresivo en el Pod que procesa comisiones, con `resources.limits.memory` activo. Valida la contención, el evento OOMKilled, la autorrecuperación y que no se pierdan eventos. |
-| **Duración** | ~7 min. |
+| **Duración** | ~7 min. `CAIDA=45 ./scripts/caos/fallo4-oomkilled.sh` deja al consumidor más tiempo fuera (por defecto, 30 s). |
 | **Patrones puestos a prueba** | **Componentización por subdominio (2)**: el fallo queda contenido en un servicio. **Publish-Subscribe (8)** e **Idempotent Receiver (9)** para no perder ni duplicar lo que estaba en curso. Los límites de memoria son de infraestructura. |
 
 **Qué hace el script:** entra al contenedor de Monetización y lanza un pequeño
-programa que reserva **8 MiB cada 0,3 s**. Como corre **dentro del mismo
+programa que reserva **4 MiB por segundo**. Como corre **dentro del mismo
 contenedor**, esa memoria cuenta contra el mismo límite de **256 MiB** del servicio.
-Monetización usa normalmente ~86 MiB, así que en **unos 7 segundos** se llega al
-límite.
+Monetización usa normalmente ~86 MiB, así que tarda **unos 45 segundos** en llegar
+al límite. Va lento a propósito, para que Prometheus alcance a medir la rampa.
+
+Después simula una **fuga que reaparece en cada arranque**: apenas Kubernetes
+reinicia el contenedor, el script lo vuelve a llenar. Kubernetes responde como
+lo hace ante cualquier contenedor que muere seguido: espera cada vez más antes
+de reiniciarlo (*CrashLoopBackOff*: 0 s, 10 s, 20 s…). Así el consumidor queda
+fuera **~30 s** y se puede ver cómo se encolan los cobros. Cumplido ese tiempo,
+el script deja de inyectar y el contenedor vuelve sano.
 
 **Qué falla y por qué:** al pasar de 256 MiB, el sistema operativo **mata el
 contenedor completo** (no solo el programa que consumía). Kubernetes registra el
-motivo `OOMKilled` y lo **reinicia** automáticamente.
+motivo `OOMKilled` y lo **reinicia** automáticamente en el mismo Pod.
 
 **Cómo debería comportarse:**
 
 - Solo Monetización se ve afectada; los demás servicios siguen normales (**contención**).
-- Durante los segundos sin Monetización, los cobros **esperan en la cola**.
-- El contenedor reinicia; lo que estaba a medias se reprocesa (duplicados descartados) y se cobra todo.
+- Durante la rampa el worker sigue cobrando: la cola no crece todavía.
+- Mientras el contenedor está caído, Contrataciones sigue publicando (~2 eventos/s) y los cobros **se encolan** en SQS (~50 mensajes visibles).
+- Al volver, el worker **se reanuda y drena la cola** en segundos. Lo que tenía en la mano al morir queda *en vuelo* 30 s, reaparece y se cobra; si ya estaba cobrado, se descarta como duplicado.
 
 **Qué ver en Grafana** — tablero *7 · Fallo 4 · Recursos: OOMKilled en Monetización*:
 
 | Panel | Qué deberías ver |
 |---|---|
-| Infra → **Memoria · % del límite** y *Uso de memoria por servicio* | Una **rampa** de Monetización hacia el 100 % y una **caída** (el contenedor murió). Como Prometheus mide cada 5 s y todo ocurre en ~7 s, puede verse solo parte de la rampa. |
-| Infra → **Contenedores terminados por OOMKilled** | Pasa a **1** (rojo) |
-| Infra → *Reinicios de contenedores* | Monetización **+1** |
-| RED → *Saturación · mensajes en colas SQS* | Un pequeño pico que se drena |
+| **Memoria · % del límite en el tiempo** | Una **rampa** de ~45 s hacia el 100 % y una **caída** al morir el contenedor. Solo cuenta el contenedor vivo: el muerto no se suma. |
+| **Cola de Monetización · visibles vs. en vuelo** | *visibles* sube mientras no hay consumidor y cae a 0 al volver; *en vuelo* tiene un pico que desaparece a los ~30 s |
+| **Flujo del cobro · publicados vs. consumidos** | Los publicados siguen planos; los consumidos caen a 0 y luego tienen un pico (el drenaje) |
+| **Contenedores terminados por OOMKilled** | Pasa a **1** (rojo) |
+| **Reinicios de contenedores** | Monetización **+3** (el OOM de la rampa y las dos recaídas) |
+| *Eventos consumidos por resultado* | COMISION_COBRADA baja (sin llegar a 0: la ventana de 1 min promedia) y tiene un salto al volver, el drenaje. DUPLICADO solo aparece si el worker murió después de cobrar y antes de borrar el mensaje; lo normal es 0 |
+| **DLQ** | Sigue en **0** |
 | Prometheus (`:9090` → *Alerts*) | Se dispara `ContenedorOOMKilled` |
 
 **Criterio de éxito:** la bitácora dice `Última terminación del contenedor:
-OOMKilled`, el contenedor vuelve a estar listo e integridad OK.
+OOMKilled`, la cola sube y vuelve a 0, DLQ = 0 e integridad OK.
 
 **Resultado del 24-sep (completo):** ✅
 

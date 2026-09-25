@@ -59,7 +59,13 @@ def crear_usuario(sesion: Session, usuario: Usuario) -> None:
     sesion.flush()
 
 
+class PerfilDuplicado(Exception):
+    """RN-08: el usuario ya tiene un perfil de ese tipo."""
+
+
 def crear_demandante(sesion: Session, perfil: PerfilDemandante) -> None:
+    if demandante_de(sesion, perfil.usuarioId):
+        raise PerfilDuplicado(f"El usuario '{perfil.usuarioId}' ya tiene perfil de demandante")
     sesion.add(PerfilDemandanteFila(
         id=perfil.id, usuarioId=perfil.usuarioId, nombreCompleto=perfil.nombreCompleto,
         fechaActivacion=perfil.fechaActivacion, **perfil.ubicacionPrincipal.model_dump(),
@@ -67,5 +73,7 @@ def crear_demandante(sesion: Session, perfil: PerfilDemandante) -> None:
 
 
 def crear_prestador(sesion: Session, perfil: PerfilPrestador) -> None:
+    if prestador_de(sesion, perfil.usuarioId):
+        raise PerfilDuplicado(f"El usuario '{perfil.usuarioId}' ya tiene perfil de prestador")
     volcado = perfil.model_dump(exclude={"ubicacionPrincipal"})
     sesion.add(PerfilPrestadorFila(**volcado, **perfil.ubicacionPrincipal.model_dump()))

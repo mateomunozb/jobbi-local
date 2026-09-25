@@ -58,7 +58,8 @@ scrape_configs:
     action: keep
     # cfs_*: periodos de CPU en que el contenedor quedó frenado por su límite
     # (throttling), la evidencia directa de la saturación en el Fallo 3.
-    regex: container_(cpu_usage_seconds_total|cpu_cfs_(throttled_)?periods_total|memory_working_set_bytes|network_(receive|transmit)_(bytes|packets_dropped)_total|oom_events_total|spec_memory_limit_bytes)
+    # start_time: distingue el contenedor vivo del muerto tras un reinicio en el mismo Pod.
+    regex: container_(cpu_usage_seconds_total|cpu_cfs_(throttled_)?periods_total|memory_working_set_bytes|network_(receive|transmit)_(bytes|packets_dropped)_total|oom_events_total|spec_memory_limit_bytes|start_time_seconds)
 
 # kube-state-metrics: límites de recursos, reinicios y motivo de terminación
 # (OOMKilled) de cada contenedor.

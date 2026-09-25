@@ -25,6 +25,7 @@ from common.observabilidad import muestras_de_colas, registrar_metricas
 from common.outbox import RelayOutbox
 from common.service import crear_servicio, resumen_latencias
 
+from . import suscripciones
 from .billetera import UMBRAL_BLOQUEO
 from .comisiones import ESTRATEGIAS_POR_PLAN
 from .models import (
@@ -241,6 +242,8 @@ class CambioPlan(BaseModel):
 @app.post("/suscripciones", tags=["suscripciones"], status_code=201,
           summary="Activar o cancelar la suscripción Pro de un prestador")
 def cambiar_suscripcion(peticion: CambioPlan, s: Session = Depends(sesion)):
+    # Una vencida no se reutiliza (RN-06): renovar abre un periodo nuevo.
+    suscripciones.vencer(s, date.today(), peticion.prestadorId)
     activa = s.scalars(select(SuscripcionProFila).where(
         SuscripcionProFila.prestadorId == peticion.prestadorId,
         SuscripcionProFila.estado == "ACTIVA",
@@ -319,6 +322,28 @@ def listar_suscripciones(
         (func.upper(SuscripcionProFila.estado) == estado.upper()) if estado else None,
     )).order_by(SuscripcionProFila.fechaInicio.desc())
     return paginar_consulta(s, consulta, SuscripcionPro, page, size)
+
+
+@app.post("/suscripciones/vencer", tags=["suscripciones"],
+          summary="Vencer las suscripciones Pro no renovadas (el prestador vuelve a FREE)")
+def vencer_suscripciones(s: Session = Depends(sesion)):
+    prestadores = suscripciones.vencer(s, date.today())
+    s.commit()
+    return {"vencidas": len(prestadores), "prestadores": prestadores,
+            "planResultante": PlanPrestador.FREE.value,
+            "porcentajeComision": PLANES[PlanPrestador.FREE.value]["porcentajeComision"]}
+
+
+@app.get("/prestadores/{prestador_id}/plan-vigente", tags=["suscripciones"],
+         summary="Plan y comisión que rigen hoy según la suscripción")
+def plan_vigente(prestador_id: str, s: Session = Depends(sesion)):
+    activa = s.scalars(select(SuscripcionProFila).where(
+        SuscripcionProFila.prestadorId == prestador_id,
+        SuscripcionProFila.estado == suscripciones.ACTIVA,
+    )).first()
+    plan = suscripciones.plan_vigente(activa, date.today()).value
+    return {"prestadorId": prestador_id, "plan": plan,
+            "porcentajeComision": PLANES[plan]["porcentajeComision"]}
 
 
 @app.get("/suscripciones/{suscripcion_id}", tags=["suscripciones"], response_model=SuscripcionPro,

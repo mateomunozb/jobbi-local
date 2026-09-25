@@ -20,9 +20,10 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 
+from common.cobertura import MUNICIPIOS_VALLE_DE_ABURRA, en_cobertura
 from common.db import nuevo_id
 from common.enums import EstadoCuenta, EstadoVerificacion, PlanPrestador
 
@@ -58,6 +59,15 @@ class RegistroRequest(BaseModel):
     # Solo para prestador.
     descripcion: str | None = None
     tarifaReferencialBase: float | None = Field(default=None, ge=0)
+
+    @field_validator("municipio")
+    @classmethod
+    def _dentro_de_cobertura(cls, municipio: str) -> str:
+        # RN-09: la Fase 1 solo opera en el Valle de Aburrá.
+        if not en_cobertura(municipio):
+            raise ValueError(f"'{municipio}' está fuera de la cobertura de la Fase 1 "
+                             f"(Valle de Aburrá: {', '.join(MUNICIPIOS_VALLE_DE_ABURRA)})")
+        return municipio
 
 
 class LoginRequest(BaseModel):

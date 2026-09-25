@@ -82,6 +82,42 @@ def alta_incidente(peticion: AltaIncidente, s: Session = Depends(sesion)):
     return Incidente.model_validate(incidente)
 
 
+class EvidenciaInvestigacion(BaseModel):
+    """Lo que respalda la investigación (RN-10).
+
+    El check-in y el check-out viven en Contrataciones: el gateway los consulta
+    y los manda aquí, este contexto no cruza la frontera para averiguarlos.
+    """
+
+    checkInRegistrado: bool = False
+    checkOutRegistrado: bool = False
+    denunciaFormal: str | None = Field(default=None, max_length=4000)
+
+
+def hay_evidencia(evidencia: EvidenciaInvestigacion) -> bool:
+    """RN-10: check-in/check-out registrado en la contratación, o una denuncia formal documentada."""
+    denuncia = (evidencia.denunciaFormal or "").strip()
+    return evidencia.checkInRegistrado or evidencia.checkOutRegistrado or bool(denuncia)
+
+
+@app.post("/incidentes/{incidente_id}/investigar", tags=["incidentes"], response_model=Incidente,
+          summary="Pasar un incidente de ABIERTO a EN_INVESTIGACION (exige evidencia)")
+def investigar_incidente(incidente_id: str, evidencia: EvidenciaInvestigacion, s: Session = Depends(sesion)):
+    fila = s.get(IncidenteFila, incidente_id)
+    if fila is None:
+        raise HTTPException(404, f"Incidente '{incidente_id}' no encontrado")
+    if fila.estado != EstadoIncidente.ABIERTO.value:
+        raise HTTPException(409, f"Solo un incidente ABIERTO pasa a investigación; este está '{fila.estado}'")
+    if not hay_evidencia(evidencia):
+        raise HTTPException(409, "Sin evidencia no se investiga (RN-10): se requiere check-in/check-out "
+                                 "registrado en la contratación o una denuncia formal documentada")
+    if evidencia.denunciaFormal and evidencia.denunciaFormal.strip():
+        fila.evidenciaDescripcion += f"\n\nDenuncia formal: {evidencia.denunciaFormal.strip()}"
+    fila.estado = EstadoIncidente.EN_INVESTIGACION.value
+    s.commit()
+    return Incidente.model_validate(fila)
+
+
 @app.get("/incidentes", tags=["incidentes"], summary="Listar incidentes")
 def listar_incidentes(
     contratacionId: str | None = Query(None),

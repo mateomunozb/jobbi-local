@@ -71,7 +71,8 @@ foto() {
     echo "   capacidad BD (ACU)             $(prom 'max(jobbi_bd_capacidad_acu)')"
     echo "   CPU BD usada / asignada        $(prom 'sum(rate(container_cpu_usage_seconds_total{namespace="aws-local",container="postgres"}[30s]))') / $(prom 'max(kube_pod_container_resource_limits{namespace="aws-local",container="postgres",resource="cpu"})') núcleos"
     echo "   memoria BD usada / asignada    $(prom 'max(container_memory_working_set_bytes{namespace="aws-local",container="postgres"}) / 2^20') / $(prom 'max(kube_pod_container_resource_limits{namespace="aws-local",container="postgres",resource="memory"}) / 2^20') MiB"
-    echo "   memoria % límite monetización  $(prom '100 * sum by (pod) (container_memory_working_set_bytes{namespace="aws-local",container="monetizacion"}) / sum by (pod) (kube_pod_container_resource_limits{namespace="aws-local",container="monetizacion",resource="memory"})')"
+    # Solo el contenedor más reciente: tras un OOMKilled cAdvisor mantiene ~5 min la serie del muerto.
+    echo "   memoria % límite monetización  $(prom '100 * sum by (pod) (container_memory_working_set_bytes{namespace="aws-local",container="monetizacion"} and on (id) (container_start_time_seconds{namespace="aws-local",container="monetizacion"} == on (pod) group_left () max by (pod) (container_start_time_seconds{namespace="aws-local",container="monetizacion"}))) / sum by (pod) (kube_pod_container_resource_limits{namespace="aws-local",container="monetizacion",resource="memory"})')"
     echo "   reinicios (aws-local)          $(prom 'sum(kube_pod_container_status_restarts_total{namespace="aws-local"})')"
   } | tee -a "$BITACORA"
 }
