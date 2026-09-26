@@ -186,6 +186,34 @@ P = {
     "consumidos": lambda: panel("timeseries", "Eventos consumidos por resultado (por minuto)",
         [("sum by (consumidor, resultado) (rate(jobbi_eventos_consumidos_total[20s])) * 60", "{{consumidor}} · {{resultado}}")],
         "short", "COMISION_COBRADA, DUPLICADO (Idempotent Receiver), NOTIFICADO, ERROR."),
+    # OKR del negocio que el sistema puede medir hoy (A1, B3, C2, C3)
+    "okr_a1": lambda: panel("stat", "A1 · Prestadores registrados con verificación aprobada",
+        [('100 * sum(jobbi_prestadores_verificacion{estado="APROBADA"}) / (sum(jobbi_prestadores_verificacion) > 0)',
+          "verificados")], "percent",
+        "OKR Confianza · KR1: 100 % de los prestadores activos verificados (identidad + antecedentes). Por RN-01 un "
+        "prestador sin verificación aprobada no aparece ni contrata, así que todo prestador activo está verificado. "
+        "Este % muestra cuántos de los registrados superaron la verificación (el resto está pendiente o fue rechazado).",
+        umbrales(("blue", None)), {"decimals": 1, "max": 100}),
+    "okr_b3": lambda: panel("stat", "B3 · Match rate (contacto tras búsqueda)",
+        [("jobbi:match_rate:porcentaje", "match")], "percent",
+        "OKR Liquidez · KR3: tasa de contacto tras búsqueda ≥ 35 % mensual. Contactos que citan una búsqueda ÷ búsquedas.",
+        umbrales(("red", None), ("yellow", 25), ("green", 35)), {"decimals": 1}),
+    "okr_c2": lambda: panel("stat", "C2 · Ingresos por comisión cobrados (COP)",
+        [("max(jobbi_comisiones_cobradas_pesos)", "comisiones")], "currencyUSD",
+        "OKR Viabilidad · KR2: $20.000.000 COP mensuales por comisión + suscripción. Aquí, el acumulado de comisiones "
+        "ya cargadas en billeteras (aún no separa por mes ni suma suscripciones).",
+        umbrales(("blue", None)), {"decimals": 0}),
+    "okr_c3": lambda: panel("stat", "C3 · Tasa de recaudo de comisión en efectivo",
+        [("jobbi:recaudo_comision_efectivo:porcentaje", "recaudo")], "percent",
+        "OKR Viabilidad · KR3: recaudo ≥ 95 % mensual. Comisiones cargadas en billetera ÷ comisiones facturadas en "
+        "efectivo. Si baja de 95 % se dispara la alerta RecaudoBajo.",
+        umbrales(("red", None), ("yellow", 90), ("green", 95)), {"decimals": 1, "max": 100}),
+    "okr_c3_serie": lambda: panel("timeseries", "C3 · Recaudo en el tiempo (meta ≥ 95 %)",
+        [("jobbi:recaudo_comision_efectivo:porcentaje", "recaudo")], "percent",
+        "Baja un instante mientras un cobro viaja por outbox → SNS → SQS y vuelve a ~100 % cuando llega. Debajo de la "
+        "franja verde (95 %) el KR está en riesgo.",
+        extra={"thresholds": umbrales(("red", None), ("green", 95)),
+               "custom": {"thresholdsStyle": {"mode": "line+area"}, "fillOpacity": 5}, "min": 80, "max": 101}),
     # RED
     "rate": lambda: panel("timeseries", "Rate · solicitudes por segundo (gateway)",
         [(f'sum by (route) (rate({H}_count{{service="gateway", {USO}}}[20s]))', "{{route}}"),
@@ -406,6 +434,19 @@ def guia(comando, caso, mirar, exito, extra=""):
     return texto("Qué es esta prueba", md + (f"\n\n{extra}" if extra else ""))
 
 
+OKR_EXPLICACION = """\
+Cuatro de los KR del caso de negocio se miden con datos reales del sistema. Los demás (A2, A3, B1, B2, C1, D1, D2) aún
+no tienen métrica; C4 (CAC) y D3 (NPS) dependen de datos externos.
+
+| KR | Meta | Qué muestra aquí | Cómo se mueve en la demo |
+|---|---|---|---|
+| **A1 · Confianza** | 100 % de prestadores activos verificados | % de registrados con identidad y antecedentes aprobados; abajo, prestadores y demandantes por estado | Con el aliado caído (Fallo 1) crecen los PENDIENTE: no aparecen ni contratan hasta verificarse. Ningún activo queda sin verificar (RN-01) |
+| **B3 · Liquidez** | Match rate ≥ 35 % mensual | Contactos que salen de una búsqueda ÷ búsquedas | Sube y baja en vivo con la carga de usuarios (nominal o pico50) |
+| **C2 · Viabilidad** | $20 M COP/mes (comisión + suscripción) | Comisiones ya cargadas en billeteras (acumulado) y su comparación con lo facturado | Crece con cada servicio completado |
+| **C3 · Viabilidad** | Recaudo ≥ 95 % mensual | Comisiones cobradas ÷ facturadas en efectivo | Se mantiene ~100 % aunque el sistema se estrese o falle un servicio: lo facturado termina igual a lo cobrado |
+"""
+
+
 # --- Tablero general -------------------------------------------------------------------------------
 
 def tablero_general():
@@ -414,6 +455,11 @@ def tablero_general():
             fila("Negocio · Cobro de comisión en efectivo (tabla 8.1.3)"),
             [(P["recaudo"](), 5, 5), (P["dlq"](), 5, 5), (P["match"](), 5, 5), (P["bloqueadas"](), 4, 5), (P["saldo"](), 5, 5)],
             [(P["comisiones"](), 12, 8), (P["consumidos"](), 12, 8)],
+            fila("OKR del negocio"),
+            [(texto("Qué muestra cada OKR", OKR_EXPLICACION), 24, 8)],
+            [(P["okr_a1"](), 6, 6), (P["okr_b3"](), 6, 6), (P["okr_c2"](), 6, 6), (P["okr_c3"](), 6, 6)],
+            [(P["verificacion"](), 12, 8), (P["match_serie"](), 12, 8)],
+            [(P["comisiones"](), 12, 8), (P["okr_c3_serie"](), 12, 8)],
             fila("Técnicas · RED + saturación (tabla 8.1.2)"),
             [(P["rate"](), 8, 8), (P["errores"](), 8, 8), (P["latencia"](), 8, 8)],
             [(P["p95_endpoint"](), 8, 8), (P["cobro"](), 8, 8), (P["outbox"](), 4, 8), (P["colas"](), 4, 8)],
