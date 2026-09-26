@@ -68,7 +68,8 @@ def crear_demandante(sesion: Session, perfil: PerfilDemandante) -> None:
         raise PerfilDuplicado(f"El usuario '{perfil.usuarioId}' ya tiene perfil de demandante")
     sesion.add(PerfilDemandanteFila(
         id=perfil.id, usuarioId=perfil.usuarioId, nombreCompleto=perfil.nombreCompleto,
-        fechaActivacion=perfil.fechaActivacion, **perfil.ubicacionPrincipal.model_dump(),
+        fechaActivacion=perfil.fechaActivacion, estadoVerificacionActual=perfil.estadoVerificacionActual.value,
+        **perfil.ubicacionPrincipal.model_dump(),
     ))
 
 

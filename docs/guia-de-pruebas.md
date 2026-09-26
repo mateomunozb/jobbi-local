@@ -13,7 +13,7 @@ Contenido:
 4. [Cómo leer el tablero y las bitácoras](#4-cómo-leer-el-tablero-y-las-bitácoras)
 5. [Qué hace la carga de fondo (k6)](#5-qué-hace-la-carga-de-fondo-k6)
 6. [Pruebas de carga](#6-pruebas-de-carga): humo, nominal, pico, estrés y resistencia
-7. [Pruebas de fallos](#7-pruebas-de-fallos): fallos 1 a 4
+7. [Pruebas de fallos](#7-pruebas-de-fallos): fallos 1 a 4 y auto-escalado horizontal (7.5)
 8. [Hallazgo: el gateway se satura cerca de 20 TPS](#8-hallazgo-el-gateway-se-satura-cerca-de-20-tps)
 9. [Resumen: qué patrón se pone a prueba en cada experimento](#9-resumen-qué-patrón-se-pone-a-prueba-en-cada-experimento)
 
@@ -152,7 +152,8 @@ negocio** se calculan desde la base de datos: solo vuelven a 0 con `--datos`.
 
 Grafana abre en **«0 · Índice de pruebas»**, con un enlace a cada tablero de la
 carpeta **JOBBI · Pruebas (un tablero por prueba)**. Cada uno muestra **solo los
-paneles de esa prueba** y, arriba, un recuadro con el comando, qué deberías ver y el
+4 o 5 indicadores clave de esa prueba** (arriba los números que dan el veredicto, debajo las
+gráficas del fallo) y, arriba, un recuadro con el comando, qué deberías ver y el
 criterio de éxito. Ya traen su rango de tiempo (15 min; 3 h en resistencia) y se
 refrescan cada 5 s. Abre el de la prueba que vas a correr **antes** de lanzarla.
 
@@ -282,14 +283,11 @@ bloqueando (y se reemplazan) y el dinero cuadra.
 
 | Panel | Qué deberías ver |
 |---|---|
-| RED → *Rate · solicitudes por segundo* | Una meseta estable en **~12 req/s** |
-| RED → *Duration · latencia del gateway* | **p95 muy por debajo** de la línea roja de 400 ms |
-| RED → *Errors · % de respuestas 5xx* | 0 % |
-| RED → *Latencia del cobro asíncrono* | Decenas de milisegundos |
-| RED → *Saturación · mensajes en colas SQS* | Prácticamente en 0 (los mensajes salen tan rápido como entran) |
-| Negocio → *Tasa de recaudo* | ~100 % (puede bajar un poco un instante mientras un cobro viaja) |
-| Negocio → *Billeteras bloqueadas (RN-04)* | Sube poco a poco (prestadores de prueba que llegan al umbral) |
-| Infra → *CPU · % del límite* | Todos los Pods por debajo del 80 % |
+| *Tasa de recaudo de comisión en efectivo* | ~100 % (puede bajar un instante mientras un cobro viaja) |
+| *Eventos en Dead Letter Queue* | **0** |
+| *Rate · solicitudes por segundo* | Una meseta estable en **~12 req/s** |
+| *Duration · latencia del gateway* | **p95 muy por debajo** de la línea roja de 400 ms |
+| *Errors · % de respuestas 5xx* | 0 % |
 
 **Criterio de éxito (lo evalúa k6 solo):** `✓` en los umbrales
 `http_req_failed < 1 %`, `p95 checkout < 300 ms`, `pubsub_latencia_cobro p95 < 5 s`,
@@ -329,11 +327,10 @@ en 100 % y DLQ en 0. Al volver a 12 TPS, la latencia debe regresar a la línea b
 
 | Panel | Qué deberías ver |
 |---|---|
-| RED → *Rate* | Escalón de 12 a lo que el sistema alcance (menos de 50 si está saturado) y regreso a 12 |
-| RED → *Duration · latencia del gateway* | El p95 cruza la línea roja durante la ráfaga y vuelve a bajar |
-| Infra → *CPU · % del límite* | **El gateway cerca del 100 %** durante la ráfaga |
-| RED → *Saturación · mensajes en colas SQS* | Puede subir un poco y se drena |
-| Negocio → *Comisiones facturadas vs. cargadas* | Las dos curvas terminan juntas |
+| *Tasa de recaudo* y *DLQ* | Recaudo vuelve a ~100 % al terminar la ráfaga; DLQ en **0** |
+| *Rate* | Escalón de 12 a lo que el sistema alcance (menos de 50 si está saturado) y regreso a 12 |
+| *Duration · latencia del gateway* | El p95 cruza la línea roja durante la ráfaga y vuelve a bajar |
+| *Comisiones facturadas vs. cargadas* | Se separan un momento (cobros en camino) y terminan juntas |
 
 **Criterio de éxito para el documento:** consistencia 100 % y DLQ = 0, aunque la
 latencia no cumpla. Documenta hasta cuánto tráfico real llegó (*Rate*) y cuánto
@@ -372,11 +369,10 @@ escalón de 12 TPS.
 
 | Panel | Qué deberías ver |
 |---|---|
-| RED → *Rate* | Escalones que suben y se "aplanan" en el máximo que el sistema alcanza |
-| Infra → *CPU · % del límite* | Qué Pod llega primero a ~100 % (se espera el gateway) |
-| Infra → *Pool de BD* y *PostgreSQL · conexiones* | Si alguna curva toca su tope |
-| RED → *Duration · latencia del gateway* y *Errors · %* | El p95 muy por encima de la línea roja; los 5xx si aparecen |
-| Infra → *Reinicios de contenedores* | Si algún Pod se reinicia por la carga |
+| *Rate* | Escalones que suben y se "aplanan" en el máximo que el sistema alcanza |
+| *Duration · latencia del gateway* | El p95 muy por encima de la línea roja |
+| *CPU · % del límite por servicio* | Qué servicio llega primero a ~100 % (se espera el gateway) |
+| *Errors · % de respuestas 5xx* | Los 5xx, si aparecen, y en qué escalón |
 
 **Qué anotar para el informe:** a qué TPS real (*Rate*) empezó la degradación,
 qué recurso se saturó primero, qué error apareció y cuánto tardó en recuperarse al
@@ -429,10 +425,10 @@ después, lo mata el límite. La carga es la nominal: lo que se mide es la
 
 | Panel | Sano | Señal de problema |
 |---|---|---|
-| Infra → *Uso de memoria por servicio* | Curva **plana** o en "dientes de sierra" (sube y baja) | Una rampa que **sube sin parar** (fuga) |
-| Infra → *Pool de BD* / *PostgreSQL · conexiones* | Estable | Crece y no baja (conexiones huérfanas) |
-| Infra → *Reinicios de contenedores* | Sin cambios | Cualquier aumento |
-| RED → *Duration* | p95 estable | Tendencia a subir con el tiempo |
+| *Uso de memoria por servicio* | Curva **plana** o en "dientes de sierra" (sube y baja) | Una rampa que **sube sin parar** (fuga) |
+| *Pool de BD · conexiones en uso* | Estable | Crece y no baja (conexiones huérfanas) |
+| *Duration · latencia del gateway* | p95 estable | Tendencia a subir con el tiempo |
+| *Reinicios de contenedores por servicio* | Sin cambios | Cualquier aumento |
 
 **Resultado del 24-sep:** no se ejecutó todavía.
 
@@ -474,6 +470,7 @@ una prueba se puede repetir.
 
 - **Prestadores ya aprobados:** **no se enteran**. Siguen apareciendo, acordando y cobrando. Si su veredicto vence durante la caída, **conservan su estado** hasta que se pueda renovar (una caída del tercero no castiga a quien ya estaba aprobado).
 - **Prestadores que se registran durante la caída:** el registro **termina igual** (no falla ni se cuelga) y quedan **PENDIENTE**: no aparecen ni trabajan todavía.
+- **Demandantes que se registran durante la caída:** también se verifican con el aliado (RN-01) y quedan **PENDIENTE**: pueden buscar, pero **no contratar** (proponer o aceptar un acuerdo responde 409) hasta que el reverificador los apruebe. Las cuentas creadas antes de esta regla quedaron aprobadas.
 - **Cuando el aliado vuelve:** un proceso de fondo en Confianza (el **reverificador**, cada 15 s) consulta a los PENDIENTE y los pasa a APROBADA o RECHAZADA. **Nadie tiene que intervenir.**
 - **Demandantes, check-out, cobros y billeteras:** sin cambios.
 
@@ -517,14 +514,10 @@ no en los de infraestructura**. Solo el apagado se ve en CPU, memoria y Pods.
 
 | Panel | Qué deberías ver |
 |---|---|
-| **Circuit Breaker · aliado de verificación** | **CERRADO → ABIERTO** a los pocos segundos de la inyección; parpadeos SEMIABIERTO cada 30 s; **CERRADO** al final |
-| **Llamadas al aliado por resultado** | Durante el fallo, `fallo` y luego sobre todo `rechazada_por_circuito`; al final vuelve `exito` |
-| **Prestadores por estado de verificación** | Sube la curva **PENDIENTE** durante el fallo y **baja a 0** tras la recuperación, mientras suben APROBADA y RECHAZADA |
-| **p95 · registro de usuarios** | Un salto corto (las esperas de 2 s antes de que el circuito se abra) y vuelta a valores bajos mientras está abierto |
-| **Uso de CPU / memoria por servicio** (aliado, Confianza, gateway) | En el apagado, la curva de **verificacion-externa se corta** y vuelve (desde cero) al encenderse. Confianza y el gateway **no suben**: el circuito evita que se queden esperando |
+| **Circuit Breaker · aliado de verificación** | **CERRADO → ABIERTO** (rojo) a los pocos segundos de la caída; parpadeos SEMIABIERTO cada 30 s; **CERRADO** al restaurar |
 | **Pods disponibles · aliado, Confianza y gateway** | **verificacion-externa cae a 0** durante el apagado y vuelve a 1; Confianza y el gateway siguen en 1 todo el tiempo |
-| **p95 · check-out** | **Sin cambios**: el cobro no depende del aliado |
-| *Network I/O por servicio* | La línea **rx de verificacion-externa** (lo que le llega) cae casi a 0 con el circuito abierto. La línea tx la domina Prometheus leyendo métricas: no te fijes en ella |
+| **Verificación de identidad por estado** | Sube **PENDIENTE** (prestadores y demandantes registrados durante la caída) y **baja a 0** tras la recuperación, mientras suben APROBADA y RECHAZADA |
+| **p95 · registro de usuarios** | Un salto corto (las esperas de 2 s antes de que el circuito se abra) y vuelta a valores bajos: nadie se queda colgado |
 
 **Criterio de éxito:** el circuito se abre y se cierra solo, los registros no se
 cuelgan, **los PENDIENTE se resuelven solos** al volver el aliado y la integridad
@@ -575,11 +568,10 @@ se cobre de menos.
 
 | Panel | Qué deberías ver |
 |---|---|
-| RED → *Saturación · mensajes en colas SQS* | La cola de monetización **sube** mientras no hay Pod y **se drena** cuando llega el nuevo |
-| Negocio → **Eventos consumidos por resultado** | Aparece la serie **`DUPLICADO`** tras cada eliminación (duplicados descartados) |
-| Negocio → *Eventos en Dead Letter Queue* | **0** todo el tiempo |
-| RED → *Latencia del cobro asíncrono* | Un pico (los cobros que esperaron) y vuelta a la normalidad |
-| Infra → *Pods disponibles de Monetización* | Cae a **0** al eliminar el Pod y vuelve a **1** cuando el reemplazo está listo (dos veces) |
+| **Pods disponibles de Monetización** | Cae a **0** al eliminar el Pod y vuelve a **1** cuando el reemplazo está listo |
+| **Eventos en Dead Letter Queue** | **0** todo el tiempo |
+| **Cola de Monetización · visibles vs. en vuelo** | *visibles* (esperando) **sube** mientras no hay Pod y **se drena** cuando llega el nuevo |
+| **Eventos consumidos por resultado** | Puede aparecer **`DUPLICADO`** tras una eliminación: un duplicado descartado, no cobrado |
 
 **Criterio de éxito:** Pod de reemplazo listo en segundos, integridad con **0
 cobros dobles y 0 comisiones perdidas**, DLQ = 0.
@@ -653,13 +645,10 @@ actualiza cada 5 s; las marcas naranjas verticales son los escalados):
 
 | Panel | Qué deberías ver |
 |---|---|
-| Capacidad de la base (ACU), CPU y memoria asignadas | Cambian en vivo: 0,5 → 1 → 2 → 4 y de vuelta a 0,5 |
-| CPU usada vs. asignada | La línea punteada roja (asignada) sube en escalones cuando la usada se pega a ella, y baja al terminar |
-| Memoria usada vs. asignada | La asignada sube y baja con la capacidad; la usada crece con la carga (más `work_mem`) y se libera al final |
-| % de la CPU asignada en uso | Pasa la línea roja de 75 % y cae cada vez que la base sube de nivel |
-| Throttling | Alto mientras la base está frenada por su límite; cae al subir la capacidad |
-| p95 del check-out | Puede subir durante la saturación y volver a bajar |
-| Reinicios de PostgreSQL | 0 durante todo el experimento |
+| **Capacidad de la base (ACU)** | Cambia en vivo: 0,5 → 1 → 2 → 4 y de vuelta a 0,5 |
+| **Reinicios de PostgreSQL** | **0** durante todo el experimento: el escalado es en caliente |
+| **PostgreSQL · CPU usada vs. asignada** | La línea punteada roja (asignada) sube en escalones cuando la usada se pega a ella, y baja al terminar |
+| **Impacto en el usuario · p95 del check-out** | Puede subir durante la saturación y vuelve a bajar cuando la base gana capacidad |
 
 **Criterio de éxito:** la capacidad sube durante la saturación y vuelve a 0,5
 ACU al pasar; bitácora con «Reinicios de PostgreSQL: antes N · después N»;
@@ -708,13 +697,11 @@ ya no pasa.
 
 | Panel | Qué deberías ver |
 |---|---|
-| RED → **Errors · % de respuestas 5xx** | Salta a ~100 % en contrataciones, gateway, monetización y comunicación (503) y vuelve a 0 |
-| RED → **Saturación · mensajes en colas SQS** | Los **20 eventos esperando** en la cola de monetización durante la caída, y se drenan al volver |
-| Infra → *Pool de BD · conexiones en uso* | Cae a 0 durante la caída |
-| Infra → *PostgreSQL · conexiones* | **Hueco** (no se puede medir una base apagada) |
-| Negocio → paneles de recaudo, billeteras y saldo | **Huecos** durante la caída: se calculan consultando la base |
-| Negocio → *Eventos en Dead Letter Queue* | **0** |
-| Infra → *Reinicios de contenedores* | **Sin cambios** |
+| **Reinicios de contenedores (todo el sistema)** | **Sin cambios**: los servicios esperan con backoff, no se reinician |
+| **Eventos en Dead Letter Queue** | **0** |
+| **Errors · % de respuestas 5xx** | Salta (503 «no disponible») en los servicios que usan la base y vuelve a 0 |
+| **PostgreSQL · conexiones** | **Hueco** mientras la base está apagada |
+| **Cola de Monetización · visibles vs. en vuelo** | Con el script, los **20 eventos esperando** durante la caída, que se drenan al volver |
 
 **Criterio de éxito:** bitácora con `Eventos publicados durante la caída: 20 ·
 cobrados tras la recuperación: 20`, integridad OK, DLQ = 0 y 0 reinicios.
@@ -765,13 +752,10 @@ motivo `OOMKilled` y lo **reinicia** automáticamente en el mismo Pod.
 
 | Panel | Qué deberías ver |
 |---|---|
-| **Memoria · % del límite en el tiempo** | Una **rampa** de ~45 s hacia el 100 % y una **caída** al morir el contenedor. Solo cuenta el contenedor vivo: el muerto no se suma. |
-| **Cola de Monetización · visibles vs. en vuelo** | *visibles* sube mientras no hay consumidor y cae a 0 al volver; *en vuelo* tiene un pico que desaparece a los ~30 s |
-| **Flujo del cobro · publicados vs. consumidos** | Los publicados siguen planos; los consumidos caen a 0 y luego tienen un pico (el drenaje) |
 | **Contenedores terminados por OOMKilled** | Pasa a **1** (rojo) |
-| **Reinicios de contenedores** | Monetización **+3** (el OOM de la rampa y las dos recaídas) |
-| *Eventos consumidos por resultado* | COMISION_COBRADA baja (sin llegar a 0: la ventana de 1 min promedia) y tiene un salto al volver, el drenaje. DUPLICADO solo aparece si el worker murió después de cobrar y antes de borrar el mensaje; lo normal es 0 |
-| **DLQ** | Sigue en **0** |
+| **Reinicios de Monetización** | Sube con cada muerte del contenedor (+1 a mano; +3 con el script) |
+| **Memoria · % del límite en el tiempo** | Una **rampa** de ~45 s hacia el 100 % y una **caída** al morir el contenedor |
+| **Cola de Monetización · visibles vs. en vuelo** | *visibles* (esperando) sube mientras no hay consumidor y cae a 0 al volver |
 | Prometheus (`:9090` → *Alerts*) | Se dispara `ContenedorOOMKilled` |
 
 **Criterio de éxito:** la bitácora dice `Última terminación del contenedor:
@@ -785,6 +769,110 @@ OOMKilled`, la cola sube y vuelve a 0, DLQ = 0 e integridad OK.
 - Dos observaciones:
   - La memoria de Monetización quedó en **67 %** del límite un minuto después, frente al **34 %** de antes. Conviene vigilarlo en la prueba de resistencia.
   - El p95 del check-out fue de 804 ms. Esa corrida se hizo a 20 TPS y coincidió con la saturación del gateway (sección 8); el script ahora usa 12 TPS.
+
+---
+
+### 7.5 Extra · Escalabilidad: Monetización escala de 1 a 3 réplicas según su cola
+
+| | |
+|---|---|
+| **Preparación (una vez)** | `./scripts/deploy-autoescalado.sh` — instala **KEDA** y la regla de escalado (`k8s/autoescalado/monetizacion-keda.yaml`) |
+| **Comando** | `./scripts/caos/autoescalado-cola.sh` |
+| **Caso** | Escalabilidad horizontal: cuando llegan más cobros de los que un Pod procesa, se agregan consumidores automáticamente y se retiran cuando pasa la carga. |
+| **Duración** | ~14 min (6,5 min de carga + hasta 5 min para volver a 1 réplica + verificación). |
+| **Patrones puestos a prueba** | **Publish-Subscribe (8)**: varios consumidores compiten por la misma cola sin que el productor se entere. **Idempotent Receiver (9)**: aunque dos Pods tomen el mismo evento, se cobra una vez. El escalado lo hacen **KEDA + HPA** (infraestructura, no es uno de los 15 patrones). |
+
+**Contexto.** En las demás pruebas cada servicio tiene **una sola réplica**: si su
+Pod falla, Kubernetes lo recrea, pero nunca hay dos procesando a la vez. Aquí
+Monetización pasa a tener **entre 1 y 3 réplicas**, según cuánto trabajo haya
+acumulado. Las tres leen la **misma cola** y se reparten los mensajes.
+
+**Cómo decide cuántas réplicas.** Se usan dos piezas:
+
+- **KEDA** (*Kubernetes Event-Driven Autoscaling*) mira cuántos mensajes
+  **esperan** en `monetizacion-events-queue` (en LocalStack) y le pasa el dato al HPA.
+- El **HPA** (*HorizontalPodAutoscaler* de Kubernetes) calcula:
+
+  **réplicas = ⌈mensajes esperando ÷ 100⌉**, entre 1 y 3
+
+  | Mensajes esperando | Réplicas |
+  |---|---|
+  | 0 – 100 | 1 |
+  | 101 – 200 | 2 |
+  | más de 200 | 3 (tope) |
+
+  El HPA tiene una tolerancia del 10 %: con 1 réplica pide la 2.ª a partir de ~111
+  mensajes. Para que se vea **1 → 2 → 3** y no un salto directo, agrega **como
+  máximo 1 Pod cada 30 s**. Para bajar espera **3 minutos** sin necesitarlos y
+  retira **1 Pod por minuto**; así no sube y baja a cada rato.
+
+**¿Por qué por la cola y no por CPU?** Lo más común en Kubernetes es escalar por
+CPU. Pero el worker de Monetización pasa casi todo el tiempo **esperando** (a SQS
+y a PostgreSQL), no calculando: la cola puede llenarse mientras la CPU sigue
+baja, y un HPA por CPU nunca reaccionaría. Lo que de verdad dice "hay trabajo
+atrasado" es la profundidad de la cola. Es lo que se hace en AWS con ECS o EKS
+(escalar por `ApproximateNumberOfMessages` de SQS).
+
+**Qué hace el script:**
+
+1. Configura Monetización con **1 hilo** y **125 ms de trabajo simulado por
+   mensaje** (`SQS_COSTO_MS`), como si cada cobro llamara a una pasarela de pagos.
+   Así un Pod procesa **~7 mensajes/s** y se satura con una carga que Minikube
+   aguanta. Al terminar, o si se interrumpe, vuelve a lo normal (2 hilos, sin
+   trabajo simulado).
+2. Lanza la **carga nominal** de fondo (12 TPS, unos 2 cobros reales/s) para que
+   haya dinero real en juego.
+3. Publica eventos **directo en SNS** por escalones (el gateway se satura cerca de
+   20 TPS, antes de poder llenar la cola: sección 8). Cada evento lleva el id de la
+   corrida (`AUTO-<hora>-…`) para contar al final que se procesaron todos, una vez.
+4. Imprime en la terminal cada cambio de réplicas y saca fotos de las métricas al
+   final de cada escalón.
+5. Espera a que las réplicas vuelvan a 1, comprueba que **publicados = procesados**
+   y corre la verificación de integridad del dinero.
+
+**Línea de tiempo** (un Pod procesa ~7 msg/s):
+
+| Tramo | Llegan (SNS + nominal) | Qué pasa | Réplicas |
+|---|---|---|---|
+| 0:00 – 1:00 | ~4 msg/s | Un Pod va al día; la cola en ~0 | **1** |
+| 1:00 – 3:30 | ~10 msg/s | Un Pod no alcanza: la cola crece ~3/s; al pasar ~110 el HPA pide otro Pod | **1 → 2** |
+| 3:30 – 6:30 | ~18 msg/s | Dos Pods (~14/s) no alcanzan: la cola vuelve a crecer; al pasar ~220 llega el tercero | **2 → 3** |
+| 6:30 – ~11:00 | 0 | Tres Pods drenan lo que quede; tras 3 min de calma, 3 → 2 y un minuto después 2 → 1 | **3 → 2 → 1** |
+
+**Qué ver en Grafana** — tablero *11 · Auto-escalado horizontal de Monetización por
+la cola* (las marcas naranjas verticales son las decisiones del HPA):
+
+| Panel | Qué deberías ver |
+|---|---|
+| **Réplicas listas ahora** y **Réplicas · pedidas por el HPA vs. listas** | Escalones 1 → 2 → 3 → 2 → 1. «deseadas» cambia primero y «listas» la sigue unos segundos después, lo que tarda en arrancar el Pod |
+| **Cola · mensajes esperando vs. umbral** | La curva de mensajes sube hasta cruzar la línea punteada (réplicas × 100); llega un Pod, la línea sube un escalón y la cola baja |
+| **Consumo por Pod · llegan vs. se procesan** | Una curva por réplica (~7 msg/s cada una). Mientras «llegan» está por encima del TOTAL, la cola crece; cada Pod nuevo sube el TOTAL hasta alcanzarla |
+| **Latencia del cobro asíncrono** | Los cobros reales se atrasan mientras la cola crece (esperan su turno) y se recuperan al escalar |
+
+En la terminal: `kubectl get hpa monetizacion-cola -n aws-local -w` muestra
+`TARGETS` (mensajes por réplica / 100) y `REPLICAS` en vivo.
+
+**Criterio de éxito:** réplicas 1 → 2 → 3 → 2 → 1 sin intervención; la bitácora
+dice `✓ cada evento se procesó exactamente una vez`; integridad OK (0 cobros
+dobles aunque tres Pods lean la misma cola); DLQ = 0.
+
+**Ajustes.** Si en otra máquina un Pod procesa más o menos de ~7 msg/s, las
+réplicas pueden no llegar a 3 o subir antes de tiempo. Los escalones se cambian
+con variables de k6 (`TASA_BAJA`, `TASA_MEDIA`, `TASA_ALTA`, en eventos/s
+publicados en SNS) en `tests/k6/autoescalado-cola.js`, y el objetivo por Pod con
+`queueLength` en el `ScaledObject`. Para volver a 1 réplica fija:
+`./scripts/deploy-autoescalado.sh --quitar`.
+
+**Resultado del 25-sep (primera corrida, completa):** ✅
+
+- Un Pod procesó **~7,2 msg/s** en la calibración (1 hilo, 125 ms por mensaje); con la nominal de fondo, ~5-6 msg/s.
+- **1 → 2** a los 2:17 (la cola llegó a ~120 mensajes); **2 → 3** a los 4:32 (~230); **3 → 2** a los 6:47 y **2 → 1** a los 7:47, ya sin carga.
+- **4.173** eventos publicados en SNS, **4.173** procesados, **4.173** distintos: ninguno perdido ni duplicado con 3 Pods leyendo la misma cola.
+- **Integridad OK** con 756 contrataciones reales: 0 cobros dobles, 0 perdidas, DLQ = 0.
+- El p95 del cobro real subió a **~3 s** mientras la cola crecía y volvió a **~0,4 s** con 3 réplicas.
+- Dos observaciones:
+  - Con la espera para bajar en **2 min**, el escalón medio se drenó tan rápido que el HPA bajó a 1 réplica justo cuando empezaba el alto, y 15 s después subió directo a 3 (un vaivén). Se subió a **3 min**. En la segunda corrida la secuencia salió limpia (1 → 2 → 3 → 2 → 1), pero sus tiempos no sirven: el equipo se suspendió en medio de la prueba.
+  - Al **retirar** un Pod, los mensajes que tenía en la mano no se pierden, pero vuelven a la cola hasta 30 s después (su *visibility timeout*). Algunos cobros reales tardan ~30-40 s justo en ese momento. Mejora posible: que el worker termine su lote antes de apagarse (*graceful shutdown*).
 
 ---
 
@@ -833,6 +921,7 @@ Números del catálogo oficial de 15 patrones.
 | Fallo 3 · Base saturada | 12 Repository + auto-escalado vertical en caliente (simulación de Aurora Serverless v2) | La base gana capacidad al saturarse y la devuelve al pasar, sin reiniciarse |
 | Extra · Base caída | **5 Outbox**, **10 Polling Publisher**, 9, **11 DLQ**, 12 + backoff | La caída de la base no pierde ni duplica cobros, ni los manda a la DLQ |
 | Fallo 4 · OOMKilled | **2 Componentización**, 8, 9 | El fallo queda contenido en un servicio y se recupera solo |
+| Extra · Auto-escalado | **8 Publish-Subscribe** (consumidores que compiten), **9 Idempotent Receiver** + KEDA/HPA | Monetización pasa de 1 a 3 réplicas según su cola y vuelve a 1, sin perder ni duplicar cobros |
 
 ### Orden recomendado
 
@@ -845,6 +934,8 @@ Números del catálogo oficial de 15 patrones.
 ./scripts/reiniciar-entorno.sh && ./scripts/caos/fallo3-saturacion-bd.sh
 ./scripts/reiniciar-entorno.sh && ./scripts/caos/fallo3-caida-base-datos.sh   # extra
 ./scripts/reiniciar-entorno.sh && ./scripts/caos/fallo4-oomkilled.sh
+./scripts/deploy-autoescalado.sh    # una sola vez: instala KEDA
+./scripts/reiniciar-entorno.sh && ./scripts/caos/autoescalado-cola.sh
 ./scripts/reiniciar-entorno.sh && ./scripts/caos/estres-punto-de-quiebre.sh
 ./scripts/reiniciar-entorno.sh && ./scripts/k6-en-cluster.sh resistencia DURACION=1h
 ./scripts/reiniciar-entorno.sh --datos     # al final: base limpia con las 4 cuentas demo

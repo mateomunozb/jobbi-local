@@ -18,6 +18,10 @@ rules:
 - apiGroups: [apps]
   resources: [deployments, statefulsets]
   verbs: [list, watch]
+# Réplicas deseadas y objetivo del HPA que crea KEDA (prueba de auto-escalado).
+- apiGroups: [autoscaling]
+  resources: [horizontalpodautoscalers]
+  verbs: [list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -51,7 +55,7 @@ spec:
       - name: kube-state-metrics
         image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
         args:
-        - --resources=pods,deployments,statefulsets,nodes
+        - --resources=pods,deployments,statefulsets,nodes,horizontalpodautoscalers
         - --namespaces=aws-local,monitoring
         ports: [{ containerPort: 8080, name: http }]
         readinessProbe:

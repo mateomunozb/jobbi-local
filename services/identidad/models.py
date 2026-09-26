@@ -36,6 +36,9 @@ class PerfilDemandante(Esquema):
     nombreCompleto: str = ""
     ubicacionPrincipal: Ubicacion
     fechaActivacion: date
+    # RN-01: el demandante también pasa por el aliado de verificación.
+    estadoVerificacionActual: EstadoVerificacion
+    insigniaVerificado: bool
 
 
 class PerfilPrestador(Esquema):

@@ -32,6 +32,9 @@ spec:
         - { name: PGHOST, value: "postgres.aws-local.svc.cluster.local" }
         # "tps:segundos" por fase, separadas por espacios (lo reemplaza el script).
         - { name: FASES, value: "__FASES__" }
+        # Consultas pesadas en paralelo. Más clientes = más procesos compitiendo
+        # por la CPU de la base, y cada consulta de la app espera más su turno.
+        - { name: CLIENTES, value: "12" }
         command: ["sh", "-c"]
         args:
         - |
@@ -43,7 +46,7 @@ spec:
           for fase in $FASES; do
             tps=${fase%%:*}; segundos=${fase##*:}
             echo "=== fase: ${tps} tps durante ${segundos} s ==="
-            pgbench -n -U "$POSTGRES_USER" -f /tmp/saturar.sql -c 12 -j 2 \
+            pgbench -n -U "$POSTGRES_USER" -f /tmp/saturar.sql -c "$CLIENTES" -j 2 \
               -R "$tps" -L 3000 -T "$segundos" -P 15 jobbi
           done
         resources:

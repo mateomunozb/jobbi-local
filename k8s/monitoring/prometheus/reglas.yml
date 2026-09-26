@@ -6,19 +6,22 @@
 groups:
 - name: jobbi-registro
   rules:
-  # Tabla 8.1.4: el nombre que esperan los paneles de CPU. Sin esta regla (que en
+  # Tabla 8.1.4: el nombre que esperan los paneles de CPU. Ventana de 20 s, como
+  # la de los paneles, para que la CPU refleje un cambio casi en vivo. Sin esta regla (que en
   # otros clústeres trae kube-prometheus) los paneles quedan en N/A.
   - record: node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate
     expr: |
       sum by (namespace, pod, container) (
-        rate(container_cpu_usage_seconds_total{container!="", container!="POD", image!=""}[1m])
+        rate(container_cpu_usage_seconds_total{container!="", container!="POD", image!=""}[20s])
       )
 
   # Negocio (8.1.3). Con denominador 0 no hay dato (no un porcentaje inventado).
+  # max y no sum: cada réplica de Monetización publica el mismo total leído de
+  # la base; con el auto-escalado habría hasta 3 copias de la misma serie.
   - record: jobbi:recaudo_comision_efectivo:porcentaje
     expr: |
-      100 * sum(jobbi_comisiones_cobradas_pesos)
-        / (sum(jobbi_comisiones_facturadas_efectivo_pesos) > 0)
+      100 * max(jobbi_comisiones_cobradas_pesos)
+        / (max(jobbi_comisiones_facturadas_efectivo_pesos) > 0)
   - record: jobbi:match_rate:porcentaje
     expr: |
       100 * sum(jobbi_contactos_iniciados)
@@ -62,7 +65,7 @@ groups:
     annotations:
       summary: "p95 del gateway en {{ $value | humanizeDuration }} (SLO < 400 ms)"
   - alert: BacklogOutboxAlto
-    expr: sum(jobbi_outbox_pendientes) > 30
+    expr: sum(max by (productor) (jobbi_outbox_pendientes)) > 30
     for: 1m
     labels: { severity: P3 }
     annotations:

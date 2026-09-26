@@ -158,12 +158,37 @@ def verificar_prestador(prestador_id: str, peticion: SolicitudVerificacion | Non
     return verificacion.resumen(sujeto, origen)
 
 
+@app.post("/demandantes/{demandante_id}/verificacion", tags=["verificaciones"],
+          summary="Verificar al demandante con el aliado externo (Adapter + Circuit Breaker)")
+def verificar_demandante(demandante_id: str, peticion: SolicitudVerificacion | None = None,
+                         s: Session = Depends(sesion)):
+    """RN-01 también para el demandante: mismo aliado, Circuit Breaker y reverificador.
+
+    Solo un demandante APROBADO puede contratar (lo exige el gateway).
+    """
+    try:
+        sujeto, origen = verificacion.solicitar(s, demandante_id, peticion.documento if peticion else None,
+                                                tipo=verificacion.DEMANDANTE)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return verificacion.resumen(sujeto, origen)
+
+
+@app.get("/demandantes/{demandante_id}/estado-verificacion", tags=["verificaciones"],
+         summary="Estado consolidado de verificación de un demandante")
+def estado_verificacion_demandante(demandante_id: str, s: Session = Depends(sesion)):
+    # Las verificaciones se guardan por id de perfil, sea cual sea su tipo.
+    return estado_verificacion(demandante_id, s)
+
+
 def _metricas_de_negocio():
     with Sesion() as s:
-        por_estado = s.execute(select(SujetoVerificacionFila.estado, func.count())
-                               .group_by(SujetoVerificacionFila.estado)).all()
-    return [("jobbi_prestadores_verificacion", "Prestadores por estado de verificación (RN-01)",
-             {"estado": estado}, n) for estado, n in por_estado]
+        por_tipo = s.execute(select(SujetoVerificacionFila.tipo, SujetoVerificacionFila.estado, func.count())
+                             .group_by(SujetoVerificacionFila.tipo, SujetoVerificacionFila.estado)).all()
+    nombres = {verificacion.PRESTADOR: ("jobbi_prestadores_verificacion", "Prestadores por estado de verificación (RN-01)"),
+               verificacion.DEMANDANTE: ("jobbi_demandantes_verificacion", "Demandantes por estado de verificación (RN-01)")}
+    return [(*nombres.get(tipo or verificacion.PRESTADOR, nombres[verificacion.PRESTADOR]), {"estado": estado}, n)
+            for tipo, estado, n in por_tipo]
 
 
 registrar_metricas(_metricas_de_negocio)

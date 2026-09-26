@@ -51,6 +51,14 @@ kubectl rollout status deploy/verificacion-externa -n "$NS" --timeout=120s >/dev
 kubectl exec -n "$NS" deploy/verificacion-externa -- python -c \
   "import urllib.request as u; u.urlopen(u.Request('http://localhost:8010/_caos', method='DELETE'), timeout=5)" \
   >/dev/null 2>&1 && echo "  ✓ aliado de verificación sin fallos" || echo "  - aliado no disponible (se reinicia abajo)"
+# Si la prueba de auto-escalado se cortó sin restaurar, Monetización seguiría
+# con 1 hilo y trabajo simulado por mensaje.
+if kubectl get deploy/servicio-monetizacion -n "$NS" -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' \
+     | grep -qw SQS_COSTO_MS; then
+  kubectl set env deploy/servicio-monetizacion -n "$NS" SQS_HILOS=2 SQS_COSTO_MS- >/dev/null
+  echo "  ✓ Monetización sin el trabajo simulado de la prueba de auto-escalado"
+fi
+kubectl annotate scaledobject/monetizacion-cola -n "$NS" autoscaling.keda.sh/paused-replicas- >/dev/null 2>&1 || true
 
 paso "2. Deteniendo pruebas k6 en curso"
 kubectl delete jobs -n pruebas -l app=k6 --ignore-not-found --wait=true 2>/dev/null | sed 's/^/  /' || true

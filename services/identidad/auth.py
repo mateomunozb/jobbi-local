@@ -1,9 +1,10 @@
 """Registro y autenticación simplificada.
 
-**Verificación del prestador:** nace PENDIENTE y sin insignia. El veredicto lo
-decide Confianza con el aliado de verificación (a través del gateway, al
-registrarse) y se lo comunica a este contexto por
-`POST /prestadores/{id}/verificacion` (RN-01).
+**Verificación (prestador y demandante):** los dos perfiles nacen PENDIENTE y
+sin insignia. El veredicto lo decide Confianza con el aliado de verificación (a
+través del gateway, al registrarse) y se lo comunica a este contexto por
+`POST /prestadores/{id}/verificacion` o `POST /demandantes/{id}/verificacion`
+(RN-01).
 
 **Decisión explícita de alcance:** el login reconoce al usuario únicamente por su
 correo, sin contraseña ni token. Es lo que se pidió para no bloquear el avance
@@ -81,8 +82,8 @@ class SesionResponse(BaseModel):
     rol: str
     perfilDemandante: PerfilDemandante | None = None
     perfilPrestador: PerfilPrestador | None = None
-    # Para un prestador, si ya tiene la insignia (RN-01); un demandante no se verifica.
-    verificado: bool = True
+    # Si el perfil ya tiene la insignia de verificado (RN-01).
+    verificado: bool = False
 
 
 def sesion_db() -> Session:
@@ -98,7 +99,7 @@ def _sesion_de(s: Session, usuario: Usuario) -> SesionResponse:
         rol="Prestador" if prestador else "Demandante",
         perfilDemandante=demandante,
         perfilPrestador=prestador,
-        verificado=prestador.insigniaVerificado if prestador else True,
+        verificado=(prestador or demandante).insigniaVerificado if (prestador or demandante) else False,
     )
 
 
@@ -156,6 +157,9 @@ def registrar(peticion: RegistroRequest, s: Session = Depends(sesion_db)) -> Ses
             nombreCompleto=usuario.nombreCompleto,
             ubicacionPrincipal=ubicacion,
             fechaActivacion=hoy,
+            # Sin insignia hasta que el aliado de verificación lo apruebe (RN-01).
+            estadoVerificacionActual=EstadoVerificacion.PENDIENTE,
+            insigniaVerificado=False,
         ))
 
     # Un solo commit: si algo falla, no queda un usuario sin su perfil.

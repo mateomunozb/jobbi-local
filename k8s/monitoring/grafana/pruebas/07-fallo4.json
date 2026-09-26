@@ -21,14 +21,138 @@
       "title": "Qué es esta prueba",
       "options": {
         "mode": "markdown",
-        "content": "**Comando:** `./scripts/caos/fallo4-oomkilled.sh`  \n**Caso del documento:** Punto 11 · Fallo 4 (Recursos / OOMKilled).\n\n**Qué deberías ver:** la memoria de monetización sube en rampa (~45 s) hasta el 100 % del límite (256 Mi) y cae: OOMKilled pasa a 1. La fuga se repite al arrancar y Kubernetes espera cada vez más para reiniciarlo (CrashLoopBackOff): los reinicios suben a 3 y el consumidor queda fuera ~30 s. Mientras tanto los publicados siguen (~2/s), los consumidos caen a 0 y los mensajes **visibles** de la cola de Monetización suben (~50); al volver el contenedor se drenan de golpe. Lo que el worker tenía en la mano al morir queda **en vuelo** 30 s y luego se cobra (DUPLICADO solo si ya estaba cobrado; lo normal es 0).\n\n**Criterio de éxito:** la bitácora dice «OOMKilled», el pico de visibles se drena a 0, DLQ = 0 e integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
+        "content": "**Comando:** `./scripts/caos/fallo4-oomkilled.sh`  \n**Caso del documento:** Punto 11 · Fallo 4 (Recursos / OOMKilled).\n\n**Qué deberías ver:** la **memoria** de Monetización sube en rampa hasta el 100 % del límite (256 Mi) y cae; **OOMKilled** pasa a 1 y **Reinicios** sube; mientras el contenedor está caído, los mensajes **visibles** (esperando) en la cola suben y se drenan al volver.\n\n**Criterio de éxito:** OOMKilled = 1, el contenedor vuelve solo, la cola vuelve a 0, DLQ = 0 e integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas.  \n**En vivo, a mano:** `kubectl exec -n aws-local deploy/servicio-monetizacion -- python -c` con una fuga de 4 MiB/s (ver docs/guia-de-pruebas.md). En la app: el check-out funciona y el cobro espera en la cola."
       },
       "id": 1,
       "gridPos": {
-        "h": 6,
+        "h": 7,
         "w": 24,
         "x": 0,
         "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Contenedores terminados por OOMKilled",
+      "description": "Motivo de la última terminación según kube-state-metrics.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kube_pod_container_status_last_terminated_reason{namespace=\"aws-local\", reason=\"OOMKilled\"}) or vector(0)",
+          "legendFormat": "OOMKilled",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Reinicios de Monetización",
+      "description": "Sube cada vez que el contenedor muere y Kubernetes lo reinicia en el mismo Pod.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"aws-local\", container=\"monetizacion\"}) or vector(0)",
+          "legendFormat": "reinicios",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 7
       }
     },
     {
@@ -87,12 +211,12 @@
           "sort": "desc"
         }
       },
-      "id": 2,
+      "id": 4,
       "gridPos": {
-        "h": 8,
+        "h": 9,
         "w": 12,
         "x": 0,
-        "y": 6
+        "y": 12
       }
     },
     {
@@ -146,281 +270,12 @@
           "sort": "desc"
         }
       },
-      "id": 3,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 6
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Contenedores terminados por OOMKilled",
-      "description": "Motivo de la última terminación según kube-state-metrics.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(kube_pod_container_status_last_terminated_reason{namespace=\"aws-local\", reason=\"OOMKilled\"}) or vector(0)",
-          "legendFormat": "OOMKilled",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
-      },
-      "id": 4,
-      "gridPos": {
-        "h": 7,
-        "w": 5,
-        "x": 0,
-        "y": 14
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Reinicios de contenedores por servicio",
-      "description": "Sube cuando un contenedor muere y Kubernetes lo reinicia en el mismo Pod.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (container) (kube_pod_container_status_restarts_total{namespace=\"aws-local\", container=~\"monetizacion\"})",
-          "legendFormat": "{{container}}",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
       "id": 5,
       "gridPos": {
-        "h": 7,
-        "w": 7,
-        "x": 5,
-        "y": 14
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Flujo del cobro · publicados en SNS vs. consumidos (por minuto)",
-      "description": "Si los publicados siguen y los consumidos caen a 0, la diferencia es lo que se acumula en la cola; al volver el consumidor aparece un pico que la drena.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(jobbi_eventos_publicados_total{tema=\"contratacion-completada-topic\"}[30s])) * 60",
-          "legendFormat": "publicados por el outbox de Contrataciones",
-          "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(jobbi_eventos_consumidos_total{consumidor=\"monetizacion\"}[30s])) * 60",
-          "legendFormat": "consumidos por Monetización",
-          "refId": "B",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 6,
-      "gridPos": {
-        "h": 7,
+        "h": 9,
         "w": 12,
         "x": 12,
-        "y": 14
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Eventos consumidos por resultado (por minuto)",
-      "description": "COMISION_COBRADA, DUPLICADO (Idempotent Receiver), NOTIFICADO, ERROR.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (consumidor, resultado) (rate(jobbi_eventos_consumidos_total[1m])) * 60",
-          "legendFormat": "{{consumidor}} · {{resultado}}",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 7,
-      "gridPos": {
-        "h": 7,
-        "w": 18,
-        "x": 0,
-        "y": 21
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Eventos en Dead Letter Queue",
-      "description": "Mensajes apartados tras 5 intentos. Meta = 0; > 0 es alerta P2.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "jobbi:eventos_en_dlq",
-          "legendFormat": "DLQ",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
-      },
-      "id": 8,
-      "gridPos": {
-        "h": 7,
-        "w": 6,
-        "x": 18,
-        "y": 21
+        "y": 12
       }
     }
   ],

@@ -148,19 +148,17 @@ async def _enviar_json(servicio: str, ruta: str, cuerpo: dict) -> Any:
 @app.post("/api/auth/registro", tags=["auth"], status_code=201,
           summary="Registrar un usuario y activar su perfil")
 async def registro(cuerpo: dict):
-    """Crea la cuenta y, si es prestador, lo verifica con el aliado (RN-01).
+    """Crea la cuenta y verifica al nuevo perfil con el aliado (RN-01).
 
-    El prestador nace PENDIENTE. Confianza consulta al aliado a través del
-    Circuit Breaker: si responde, queda APROBADA o RECHAZADA al instante; si
-    está caído, el registro termina igual (PENDIENTE) y Confianza lo reintenta
-    en segundo plano.
+    Prestador y demandante nacen PENDIENTE. Confianza consulta al aliado a
+    través del Circuit Breaker: si responde, queda APROBADA o RECHAZADA al
+    instante; si está caído, el registro termina igual (PENDIENTE) y Confianza
+    lo reintenta en segundo plano.
     """
     respuesta = await _enviar("identidad", "/auth/registro", cuerpo)
     if respuesta.status_code != 201:
         return respuesta
-    sesion = json.loads(respuesta.body)
-    if sesion.get("perfilPrestador"):
-        sesion = await _verificar_prestador(sesion, cuerpo.get("numeroDocumento"))
+    sesion = await _verificar_perfil(json.loads(respuesta.body), cuerpo.get("numeroDocumento"))
     return JSONResponse(status_code=201, content=sesion)
 
 
@@ -170,25 +168,37 @@ async def login(cuerpo: dict):
     if respuesta.status_code != 200:
         return respuesta
     sesion = json.loads(respuesta.body)
-    # Un prestador que sigue PENDIENTE (p. ej. Confianza no respondió al
+    # Un perfil que sigue PENDIENTE (p. ej. Confianza no respondió al
     # registrarse) aprovecha el login para volver a pedir su verificación.
-    if (sesion.get("perfilPrestador") or {}).get("estadoVerificacionActual") == "PENDIENTE":
-        sesion = await _verificar_prestador(sesion, (sesion.get("usuario") or {}).get("numeroDocumento"))
+    perfil = sesion.get("perfilPrestador") or sesion.get("perfilDemandante") or {}
+    if perfil.get("estadoVerificacionActual") == "PENDIENTE":
+        sesion = await _verificar_perfil(sesion, (sesion.get("usuario") or {}).get("numeroDocumento"))
     return JSONResponse(status_code=200, content=sesion)
 
 
-async def _verificar_prestador(sesion: dict, documento: str | None) -> dict:
-    """Pide la verificación a Confianza y devuelve la sesión con el perfil actualizado."""
-    prestador_id = sesion["perfilPrestador"]["id"]
-    resultado = await _enviar_json("confianza", f"/prestadores/{prestador_id}/verificacion",
-                                   {"documento": documento})
-    if resultado is None:
-        log.warning("verificacion_no_solicitada", extra={"prestadorId": prestador_id})
-        return sesion
-    perfil = await _pedir("identidad", f"/prestadores/{prestador_id}")
-    if perfil is None:
-        return sesion
-    return {**sesion, "perfilPrestador": perfil, "verificado": perfil["insigniaVerificado"]}
+# Qué perfil de la sesión se verifica y dónde vive en cada contexto.
+_PERFILES_VERIFICABLES = (("perfilPrestador", "prestadores"), ("perfilDemandante", "demandantes"))
+
+
+async def _verificar_perfil(sesion: dict, documento: str | None) -> dict:
+    """Pide la verificación a Confianza (RN-01) y devuelve la sesión con el perfil actualizado.
+
+    Un usuario con perfil de prestador se verifica como prestador; si solo es
+    demandante, como demandante. Es la misma persona y el mismo documento.
+    """
+    for clave, ruta in _PERFILES_VERIFICABLES:
+        if not sesion.get(clave):
+            continue
+        perfil_id = sesion[clave]["id"]
+        resultado = await _enviar_json("confianza", f"/{ruta}/{perfil_id}/verificacion", {"documento": documento})
+        if resultado is None:
+            log.warning("verificacion_no_solicitada", extra={"perfilId": perfil_id, "tipo": ruta})
+            return sesion
+        perfil = await _pedir("identidad", f"/{ruta}/{perfil_id}")
+        if perfil is None:
+            return sesion
+        return {**sesion, clave: perfil, "verificado": perfil["insigniaVerificado"]}
+    return sesion
 
 
 # --- Observabilidad --------------------------------------------------------
@@ -726,6 +736,22 @@ async def _exigir_cobertura(demandante_id: str, prestador_id: str) -> None:
                                      "la Fase 1 no admite contrataciones allí")
 
 
+async def _exigir_demandante_verificado(demandante_id: str) -> None:
+    """RN-01: solo un demandante APROBADO puede contratar.
+
+    Igual que con el prestador: se lee el estado que Confianza publicó en el
+    perfil; si Identidad no responde, se deja pasar.
+    """
+    perfil = await _pedir("identidad", f"/demandantes/{demandante_id}")
+    estado = (perfil or {}).get("estadoVerificacionActual")
+    if estado == "RECHAZADA":
+        raise HTTPException(409, "El demandante no superó la verificación de identidad y antecedentes "
+                                 "(RN-01): no puede contratar servicios")
+    if estado == "PENDIENTE":
+        raise HTTPException(409, "El demandante tiene la verificación de identidad pendiente (RN-01): "
+                                 "todavía no puede contratar servicios")
+
+
 @app.get("/api/bff/comision-vigente/{prestador_id}", tags=["bff"],
          summary="Comisión que se congelaría hoy para este prestador")
 async def bff_comision_vigente(prestador_id: str):
@@ -762,6 +788,7 @@ async def bff_proponer_acuerdo(cuerpo: dict):
                                      "termínalo y califícalo antes de acordar uno nuevo")
     await _exigir_billetera_al_dia(prestador_id)
     await _exigir_prestador_verificado(prestador_id)
+    await _exigir_demandante_verificado(demandante_id)
     await _exigir_cobertura(demandante_id, prestador_id)
 
     oficio_id = cuerpo.get("oficioId")
@@ -815,6 +842,7 @@ async def bff_aceptar_acuerdo(acuerdo_id: str, cuerpo: dict):
     if acuerdo_previo["estado"] == "PENDIENTE":
         await _exigir_billetera_al_dia(acuerdo_previo["prestadorId"])
         verificacion = await _exigir_prestador_verificado(acuerdo_previo["prestadorId"])
+        await _exigir_demandante_verificado(acuerdo_previo["demandanteId"])
 
     porcentaje, plan = await _comision_vigente(acuerdo_previo["prestadorId"])
     resultado = await _enviar_json("contrataciones", f"/acuerdos/{acuerdo_id}/aceptar", {

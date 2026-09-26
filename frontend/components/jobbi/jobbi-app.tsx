@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, ArrowRight, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, CircleAlert, Clock3, CreditCard, Home, Loader2, LockKeyhole, LogOut, Mail, MapPin, MessageCircle, MoreHorizontal, RefreshCw, Search, Send, ShieldCheck, Sparkles, Star, UserRound, WalletCards } from "lucide-react"
 import { navAdmin, navDemandante, navPrestador, navigationTree, type Role, type Screen } from "./data"
-import { ApiError, CATEGORIAS_SUGERIDAS, MUNICIPIOS, api, iniciales, pesos, type Categoria, type Cola, type Contratacion, type ConversacionEnBandeja, type EtapaCobro, type Latencias, type Mensaje, type Notificacion, type PerfilPrestador, type Resena, type Sesion } from "@/lib/api"
+import { ApiError, CATEGORIAS_SUGERIDAS, MUNICIPIOS, api, iniciales, pesos, type Categoria, type Cola, type Contratacion, type ConversacionEnBandeja, type EtapaCobro, type Latencias, type Mensaje, type Notificacion, type PerfilDemandante, type PerfilPrestador, type Resena, type Sesion } from "@/lib/api"
 import { SesionContext, guardarSesion, leerSesionGuardada, perfilIdDe, useSesion, type Seleccion } from "./session"
 import { useChatEnVivo } from "./use-chat"
 import { EN_VIVO_MS, useDatos, type EstadoCarga } from "./use-data"
@@ -318,7 +318,12 @@ function Register({ role, setScreen, entrar }: { role: Role; setScreen: (s: Scre
       </>}
       {error && <div className="form-error" role="alert"><CircleAlert /> {error}</div>}
 
-      <div className="verification-note"><ShieldCheck /><p><strong>Verificación de identidad aprobada.</strong><br />En esta fase la validación con Truora se da por superada, así que tu cuenta queda activa de inmediato.</p></div>
+      {/* El veredicto lo da el aliado de verificación al crear la cuenta (RN-01), al
+          prestador y al demandante: aprobada, rechazada o pendiente si el aliado no
+          responde. Aquí solo se avisa. */}
+      <div className="verification-note info"><ShieldCheck /><p><strong>Verificaremos tu identidad y antecedentes.</strong><br />Al crear tu cuenta consultamos a nuestro aliado de verificación. {esPrestador
+        ? "Solo los perfiles aprobados aparecen en la búsqueda y pueden acordar servicios."
+        : "Podrás buscar de inmediato; para contratar, tu verificación debe estar aprobada."}</p></div>
 
       <Button type="submit" disabled={!completo || cargando}>
         {cargando ? <><Loader2 className="spin" /> Creando cuenta…</> : <>Crear cuenta <ArrowRight data-icon="inline-end" /></>}
@@ -985,6 +990,14 @@ function Notifications({ role, setScreen }: { role: Role; setScreen: (s: Screen)
   </AppContent>
 }
 
+// Prestador y demandante se verifican con el aliado (RN-01): la insignia
+// refleja el veredicto real del perfil, nunca un texto fijo.
+function insigniaDeCuenta(estado: string | undefined) {
+  if (estado === "APROBADA") return <Badge tone="success"><ShieldCheck /> Identidad verificada</Badge>
+  if (estado === "RECHAZADA") return <Badge tone="danger"><CircleAlert /> Verificación rechazada</Badge>
+  return <Badge tone="warning"><Clock3 /> Verificación pendiente</Badge>
+}
+
 function Profile({ role, setScreen }: { role: Role; setScreen: (s: Screen) => void }) {
   const { sesion, salir } = useSesion()
   if (!sesion) return null
@@ -994,9 +1007,10 @@ function Profile({ role, setScreen }: { role: Role; setScreen: (s: Screen) => vo
     <PageHeader title="Mi perfil" subtitle="Gestiona tu información" onBack={() => setScreen(role === "Demandante" ? "search" : "dashboard")} />
     <div className="profile-summary">
       <Avatar nombre={u.nombreCompleto} id={u.id} large />
-      <div><h2>{u.nombreCompleto}</h2><p>{u.correo}</p><Badge tone="success"><Check /> Cuenta verificada</Badge></div>
+      <div><h2>{u.nombreCompleto}</h2><p>{u.correo}</p>{insigniaDeCuenta((sesion.perfilPrestador ?? sesion.perfilDemandante)?.estadoVerificacionActual)}</div>
     </div>
     <div className="settings-list">
+      <button onClick={() => setScreen("verification")}><ShieldCheck /><span><strong>Verificación de identidad</strong><small>Estado: {enTitulo((sesion.perfilPrestador ?? sesion.perfilDemandante)?.estadoVerificacionActual ?? "PENDIENTE")}</small></span><ChevronRight /></button>
       <div className="setting-static"><MapPin /><span><strong>Ubicación principal</strong><small>{ubicacion ? `${ubicacion.barrio}, ${ubicacion.municipio}` : "Sin definir"}</small></span></div>
       <div className="setting-static"><UserRound /><span><strong>Documento</strong><small>{u.tipoDocumento} {u.numeroDocumento}</small></span></div>
       <div className="setting-static"><MessageCircle /><span><strong>Teléfono</strong><small>{u.telefono}</small></span></div>
@@ -1298,22 +1312,42 @@ function Checkin({ setScreen }: { setScreen: (s: Screen) => void }) {
 
 function Verification({ setScreen }: { setScreen: (s: Screen) => void }) {
   const { sesion } = useSesion()
-  const prestadorId = sesion?.perfilPrestador?.id
-  const estado = useDatos(() => api.estadoVerificacion(prestadorId!), [prestadorId])
+  const tipo = sesion?.perfilPrestador ? "prestadores" as const : "demandantes" as const
+  const perfilId = (sesion?.perfilPrestador ?? sesion?.perfilDemandante)?.id
+  const estado = useDatos(() => api.estadoVerificacion(perfilId!, tipo), [perfilId, tipo], { cadaMs: EN_VIVO_MS })
+  const esPrestador = tipo === "prestadores"
   return <AppContent>
     <PageHeader title="Verificación de identidad" subtitle="Tu confianza es nuestra prioridad" onBack={() => setScreen("profile")} />
-    <div className="verification-panel pending">
-      <div className="verification-icon"><ShieldCheck /></div>
-      <Badge tone="success">Aprobada</Badge>
-      <h2>Tu identidad está verificada</h2>
-      <p>En esta fase la validación con Truora se da por superada, así que tu cuenta queda activa desde el registro y la insignia aparece de inmediato.</p>
-      <Consulta estado={estado} filas={1}>{datos => (
+    <Consulta estado={estado} filas={3}>{datos => {
+      // El veredicto es del aliado de verificación (RN-01): la insignia exige
+      // identidad y antecedentes aprobados.
+      const vista = {
+        APROBADA: { tono: "success" as const, etiqueta: "Aprobada", titulo: "Tu identidad está verificada", icono: <ShieldCheck />,
+          texto: esPrestador
+            ? "Nuestro aliado confirmó tu identidad y tus antecedentes. Tu perfil aparece en la búsqueda con la insignia de verificado."
+            : "Nuestro aliado confirmó tu identidad y tus antecedentes. Ya puedes contratar servicios." },
+        RECHAZADA: { tono: "danger" as const, etiqueta: "Rechazada", titulo: "No pudimos verificarte", icono: <CircleAlert />,
+          texto: esPrestador
+            ? "El aliado de verificación no aprobó tu identidad o tus antecedentes. Tu perfil no aparece en la búsqueda ni puede acordar servicios."
+            : "El aliado de verificación no aprobó tu identidad o tus antecedentes. No puedes contratar servicios." },
+        PENDIENTE: { tono: "warning" as const, etiqueta: "Pendiente", titulo: "Estamos verificando tu identidad", icono: <Clock3 />,
+          texto: esPrestador
+            ? "El aliado de verificación aún no responde. Lo reintentamos automáticamente; mientras tanto tu perfil no aparece en la búsqueda."
+            : "El aliado de verificación aún no responde. Lo reintentamos automáticamente; mientras tanto puedes buscar, pero no contratar." },
+        SIN_SOLICITUD: { tono: "warning" as const, etiqueta: "Sin solicitud", titulo: "Aún no hay verificación", icono: <Clock3 />,
+          texto: "Tu verificación se solicitará automáticamente. Mientras tanto tu perfil no aparece en la búsqueda." },
+      }[datos.estado] ?? { tono: "warning" as const, etiqueta: datos.estado, titulo: "Verificación en curso", icono: <Clock3 />, texto: "" }
+      return <div className={`verification-panel ${datos.estado === "APROBADA" ? "" : "blocked"}`}>
+        <div className="verification-icon">{vista.icono}</div>
+        <Badge tone={vista.tono}>{vista.etiqueta}</Badge>
+        <h2>{vista.titulo}</h2>
+        <p>{vista.texto}</p>
         <div className="verification-benefits">
           <span><Check /> {datos.aprobadas} de {datos.totalVerificaciones} verificaciones aprobadas</span>
           {datos.tiposAprobados.map(tipo => <span key={tipo}><ShieldCheck /> {enTitulo(tipo)}</span>)}
         </div>
-      )}</Consulta>
-    </div>
+      </div>
+    }}</Consulta>
   </AppContent>
 }
 
@@ -1554,6 +1588,9 @@ function AdminDashboard({ setScreen }: { setScreen: (s: Screen) => void }) {
 
 const PANTALLAS_PUBLICAS: Screen[] = ["map", "landing", "role", "register", "login", "coverage"]
 
+// Cada cuánto se vuelve a pedir el perfil mientras la verificación está pendiente.
+const VERIFICACION_CADA_MS = 5000
+
 export default function JobbiApp() {
   const [sesion, setSesion] = useState<Sesion | null>(null)
   const [role, setRole] = useState<Role>("Demandante")
@@ -1572,6 +1609,39 @@ export default function JobbiApp() {
     }
     setListo(true)
   }, [])
+
+  // RN-01: el veredicto del aliado llega después del registro (p. ej. el aliado
+  // estaba caído y el reverificador lo resuelve al volver). Mientras el perfil
+  // siga PENDIENTE se vuelve a pedir a Identidad cada pocos segundos, y en cuanto
+  // cambia se actualiza la sesión: la insignia y el encabezado cambian solos,
+  // sin cerrar sesión ni recargar.
+  const perfilActivo = sesion?.perfilPrestador ?? sesion?.perfilDemandante
+  const pendiente = perfilActivo?.estadoVerificacionActual === "PENDIENTE"
+  useEffect(() => {
+    if (!sesion || !perfilActivo || !pendiente) return
+    const esPrestador = Boolean(sesion.perfilPrestador)
+    const id = perfilActivo.id
+    let vivo = true
+    const consultar = async () => {
+      try {
+        const perfil = esPrestador ? await api.prestador(id) : await api.demandante(id)
+        if (!vivo || perfil.estadoVerificacionActual === "PENDIENTE") return
+        setSesion(previa => {
+          if (!previa) return previa
+          const nueva = esPrestador
+            ? { ...previa, perfilPrestador: perfil as PerfilPrestador, verificado: perfil.insigniaVerificado }
+            : { ...previa, perfilDemandante: perfil as PerfilDemandante, verificado: perfil.insigniaVerificado }
+          guardarSesion(nueva)
+          return nueva
+        })
+      } catch {
+        // Identidad no respondió: se reintenta en la siguiente vuelta.
+      }
+    }
+    consultar()
+    const temporizador = window.setInterval(consultar, VERIFICACION_CADA_MS)
+    return () => { vivo = false; window.clearInterval(temporizador) }
+  }, [perfilActivo?.id, pendiente])
 
   const entrar = (nueva: Sesion) => {
     guardarSesion(nueva)

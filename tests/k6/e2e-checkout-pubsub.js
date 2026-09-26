@@ -59,6 +59,7 @@ const cerrados = new Counter('pubsub_servicios_cerrados');
 const reemplazos = new Counter('prestadores_bloqueados_reemplazados');
 const abandonados = new Counter('servicios_dejados_a_medias');
 const noAprobados = new Counter('prestadores_no_aprobados');
+const demandantesNoAprobados = new Counter('demandantes_no_aprobados');
 const consistencia = new Rate('pubsub_consistencia_final');
 const busquedas = new Counter('busquedas_realizadas');
 const matchSimulado = new Rate('contacto_tras_busqueda');
@@ -211,13 +212,29 @@ export function setup() {
 // Estado por VU: cada VU es un demandante con su propio contacto, así dos VU
 // nunca negocian sobre el mismo chat (una propuesta nueva reemplaza la abierta).
 let yo = null;
+// Cuántas veces esta VU tuvo que registrarse con otro documento porque el
+// aliado rechazó el anterior.
+let rechazosDemandante = 0;
+
+// El demandante también se verifica al registrarse (RN-01) y solo un APROBADO
+// contrata. Si el aliado lo rechaza, la VU vuelve con otra persona (otro
+// documento); si quedó PENDIENTE (aliado caído, Fallo 1), repite la misma
+// cuenta más tarde: el login vuelve a pedir la verificación.
+function nuevoDemandante(data) {
+  const sesion = registrar('Demandante', data.run, `v${__VU}d${rechazosDemandante}`);
+  if (!sesion) return null;
+  const estado = sesion.perfilDemandante.estadoVerificacionActual;
+  if (estado === 'APROBADA') return sesion.perfilDemandante.id;
+  demandantesNoAprobados.add(1);
+  if (estado === 'RECHAZADA') rechazosDemandante += 1;
+  return null;
+}
 
 export default function (data) {
   if (yo === null) {
     const prestador = data.prestadores[(__VU - 1) % data.prestadores.length];
-    const sesion = registrar('Demandante', data.run, `v${__VU}`);
-    if (!sesion) return abandonar();
-    const demandante = sesion.perfilDemandante.id;
+    const demandante = nuevoDemandante(data);
+    if (!demandante) return abandonar();
     const chat = post('/api/bff/contactar', { demandanteId: demandante, prestadorId: prestador }, 'contactar');
     if (chat.status !== 201) return abandonar();
     yo = { prestador, demandante, contacto: chat.json('contacto.id'), conversacion: chat.json('conversacion.id'),

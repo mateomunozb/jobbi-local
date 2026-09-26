@@ -9,7 +9,7 @@ export type Rol = "Demandante" | "Prestador" | "Admin"
 
 export type Ubicacion = { municipio: string; comuna: string; barrio: string; latitud: number; longitud: number }
 export type Usuario = { id: string; nombreCompleto: string; correo: string; telefono: string; tipoDocumento: string; numeroDocumento: string; fechaRegistro: string; estado: string }
-export type PerfilDemandante = { id: string; usuarioId: string; nombreCompleto: string; ubicacionPrincipal: Ubicacion; fechaActivacion: string }
+export type PerfilDemandante = { id: string; usuarioId: string; nombreCompleto: string; ubicacionPrincipal: Ubicacion; fechaActivacion: string; estadoVerificacionActual: string; insigniaVerificado: boolean }
 export type PerfilPrestador = { id: string; usuarioId: string; nombreCompleto: string; telefono: string; descripcion: string; portafolioUrl: string; tarifaReferencialBase: number; insigniaVerificado: boolean; estadoVerificacionActual: string; planActual: string; calificacionPromedio: number; totalResenas: number; fechaActivacion: string; ubicacionPrincipal: Ubicacion }
 export type Sesion = { usuario: Usuario; rol: Rol; perfilDemandante: PerfilDemandante | null; perfilPrestador: PerfilPrestador | null; verificado: boolean }
 
@@ -166,6 +166,7 @@ export const api = {
   prestadores: (filtros: { verificado?: boolean; calificacionMinima?: number; municipio?: string; q?: string; orden?: string; size?: number } = {}) =>
     pedir<Pagina<PerfilPrestador>>(`/identidad/prestadores${query(filtros)}`),
   prestador: (id: string) => pedir<PerfilPrestador>(`/identidad/prestadores/${id}`),
+  demandante: (id: string) => pedir<PerfilDemandante>(`/identidad/demandantes/${id}`),
   usuario: (id: string) => pedir<Usuario>(`/identidad/usuarios/${id}`),
 
   // --- Mercado: altas ---
@@ -246,8 +247,9 @@ export const api = {
     pedir<Pagina<Resena>>(`/confianza/resenas${query(filtros)}`),
   resumenResenas: (receptorId: string) =>
     pedir<{ receptorId: string; total: number; promedio: number; distribucion: Record<string, number> }>(`/confianza/resenas/resumen${query({ receptorId })}`),
-  estadoVerificacion: (prestadorId: string) =>
-    pedir<{ prestadorId: string; totalVerificaciones: number; aprobadas: number; pendientes: number; insigniaVigente: boolean; tiposAprobados: string[] }>(`/confianza/prestadores/${prestadorId}/estado-verificacion`),
+  // Prestador y demandante se verifican igual (RN-01); cambia la ruta del perfil.
+  estadoVerificacion: (perfilId: string, tipo: "prestadores" | "demandantes" = "prestadores") =>
+    pedir<{ prestadorId: string; estado: "APROBADA" | "PENDIENTE" | "RECHAZADA" | "SIN_SOLICITUD"; totalVerificaciones: number; aprobadas: number; pendientes: number; insigniaVigente: boolean; tiposAprobados: string[] }>(`/confianza/${tipo}/${perfilId}/estado-verificacion`),
 
   // --- Monetización ---
   billeteras: (prestadorId: string) => pedir<Pagina<Billetera>>(`/monetizacion/billeteras${query({ prestadorId })}`),

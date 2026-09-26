@@ -1,4 +1,4 @@
-"""Verificación de prestadores con el aliado externo (RN-01).
+"""Verificación de prestadores y demandantes con el aliado externo (RN-01).
 
 Cuándo se consulta al aliado:
 
@@ -135,10 +135,15 @@ def verificar(s: Session, sujeto: SujetoVerificacionFila) -> str:
     return ALIADO
 
 
+PRESTADOR, DEMANDANTE = "PRESTADOR", "DEMANDANTE"
+_RUTA_PERFIL = {PRESTADOR: "prestadores", DEMANDANTE: "demandantes"}
+
+
 def publicar_en_identidad(sujeto: SujetoVerificacionFila) -> bool:
     """Le pasa el veredicto a Identidad (insignia y búsqueda). Devuelve si lo aceptó."""
+    ruta = _RUTA_PERFIL.get(sujeto.tipo or PRESTADOR, "prestadores")
     try:
-        respuesta = httpx.post(f"{IDENTIDAD_URL}/prestadores/{sujeto.prestadorId}/verificacion",
+        respuesta = httpx.post(f"{IDENTIDAD_URL}/{ruta}/{sujeto.prestadorId}/verificacion",
                                json={"estado": sujeto.estado}, timeout=3.0, headers=cabeceras_de_traza())
         respuesta.raise_for_status()
     except httpx.HTTPError as e:
@@ -148,13 +153,17 @@ def publicar_en_identidad(sujeto: SujetoVerificacionFila) -> bool:
     return True
 
 
-def solicitar(s: Session, prestador_id: str, documento: str | None) -> tuple[SujetoVerificacionFila, str]:
-    """Registra (o actualiza) la solicitud y verifica. Hace commit. Devuelve (sujeto, origen)."""
+def solicitar(s: Session, prestador_id: str, documento: str | None,
+              tipo: str = PRESTADOR) -> tuple[SujetoVerificacionFila, str]:
+    """Registra (o actualiza) la solicitud y verifica. Hace commit. Devuelve (sujeto, origen).
+
+    `prestador_id` es el id del perfil, sea de prestador o de demandante (`tipo`).
+    """
     sujeto = s.get(SujetoVerificacionFila, prestador_id)
     if sujeto is None:
         if not documento:
             raise ValueError("Se requiere el documento para la primera verificación")
-        sujeto = SujetoVerificacionFila(prestadorId=prestador_id, documento=documento, estado=PENDIENTE,
+        sujeto = SujetoVerificacionFila(prestadorId=prestador_id, tipo=tipo, documento=documento, estado=PENDIENTE,
                                         sincronizado=True, intentos=0, creadoEn=datetime.now())
         s.add(sujeto)
     elif documento:
@@ -170,6 +179,7 @@ def resumen(sujeto: SujetoVerificacionFila | None, origen: str | None = None) ->
     estado = sujeto.estado if sujeto else "SIN_SOLICITUD"
     return {
         "prestadorId": sujeto.prestadorId if sujeto else None,
+        "tipo": sujeto.tipo if sujeto else None,
         "estado": estado,
         "insigniaVigente": estado == APROBADA,
         "fechaVeredicto": sujeto.fechaVeredicto if sujeto else None,

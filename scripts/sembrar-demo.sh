@@ -55,7 +55,9 @@ DEMANDANTES = [
     {"nombreCompleto": "Demandante 1", "correo": "demandante1@demo.jobbi.co", "telefono": "3007778899",
      "numeroDocumento": "1017000003", "municipio": "Medellín", "barrio": "Belén"},
     {"nombreCompleto": "Demandante 2", "correo": "demandante2@demo.jobbi.co", "telefono": "3009990011",
-     "numeroDocumento": "1017000004", "municipio": "Sabaneta", "barrio": "Centro"},
+     # El aliado simulado rechaza ~20 % de los documentos (siempre los mismos):
+     # 1017000004 sale con antecedentes y el demandante no podría contratar (RN-01).
+     "numeroDocumento": "1017000005", "municipio": "Sabaneta", "barrio": "Centro"},
 ]
 
 print("Prestadores:")

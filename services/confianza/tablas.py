@@ -63,7 +63,11 @@ class SujetoVerificacionFila(Base):
 
     __tablename__ = "sujetos_verificacion"
 
+    # Id del perfil verificado. Conserva el nombre histórico, pero desde que el
+    # demandante también se verifica (RN-01) puede ser de cualquiera de los dos:
+    # `tipo` dice cuál, y así a qué perfil de Identidad se le publica el veredicto.
     prestadorId: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(20), index=True, server_default="PRESTADOR")  # PRESTADOR | DEMANDANTE
     documento: Mapped[str] = mapped_column(String(30))
     estado: Mapped[str] = mapped_column(String(20), index=True)  # PENDIENTE | APROBADA | RECHAZADA
     fechaVeredicto: Mapped[date | None] = mapped_column(Date, nullable=True)

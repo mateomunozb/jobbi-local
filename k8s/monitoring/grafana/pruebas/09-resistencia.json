@@ -21,11 +21,11 @@
       "title": "Qué es esta prueba",
       "options": {
         "mode": "markdown",
-        "content": "**Comando:** `./scripts/k6-en-cluster.sh resistencia DURACION=1h`  \n**Caso del documento:** Punto 10.4 · Escenario 4 Resistencia.\n\n**Qué deberías ver:** memoria de cada servicio plana o en dientes de sierra (una rampa que sube sin parar sería una fuga); pool y conexiones de PostgreSQL estables; reinicios sin cambios; p95 estable.\n\n**Criterio de éxito:** ninguna curva crece sostenidamente durante la hora y 0 reinicios.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
+        "content": "**Comando:** `./scripts/k6-en-cluster.sh resistencia DURACION=1h`  \n**Caso del documento:** Punto 10.4 · Escenario 4 Resistencia.\n\n**Qué deberías ver:** **memoria** de cada servicio plana o en dientes de sierra (una rampa que sube sin parar sería una fuga); **pool** de BD estable; **p95** estable; **Reinicios** sin cambios.\n\n**Criterio de éxito:** ninguna curva crece sostenidamente durante la hora y 0 reinicios.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
       },
       "id": 1,
       "gridPos": {
-        "h": 6,
+        "h": 7,
         "w": 24,
         "x": 0,
         "y": 0
@@ -73,7 +73,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 7
       }
     },
     {
@@ -128,62 +128,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 15
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "PostgreSQL · conexiones de clientes vs. max_connections",
-      "description": "Hueco = la base no respondió (Fallo 3).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (estado) (jobbi_postgres_conexiones)",
-          "legendFormat": "{{estado}}",
-          "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(jobbi_postgres_conexiones_max)",
-          "legendFormat": "max_connections",
-          "refId": "B",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 4,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 15
+        "y": 16
       }
     },
     {
@@ -200,7 +145,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
           "legendFormat": "p50",
           "refId": "A",
           "range": true
@@ -210,7 +155,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
           "legendFormat": "p95",
           "refId": "B",
           "range": true
@@ -220,7 +165,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
           "legendFormat": "p99",
           "refId": "C",
           "range": true
@@ -262,12 +207,12 @@
           "sort": "desc"
         }
       },
-      "id": 5,
+      "id": 4,
       "gridPos": {
-        "h": 7,
-        "w": 16,
-        "x": 0,
-        "y": 23
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
       }
     },
     {
@@ -307,12 +252,12 @@
           "sort": "desc"
         }
       },
-      "id": 6,
+      "id": 5,
       "gridPos": {
         "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 23
+        "w": 24,
+        "x": 0,
+        "y": 24
       }
     }
   ],

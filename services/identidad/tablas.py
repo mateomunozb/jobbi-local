@@ -36,12 +36,21 @@ class PerfilDemandanteFila(Base):
     usuarioId: Mapped[str] = mapped_column(ForeignKey("usuarios.id"), index=True)
     nombreCompleto: Mapped[str] = mapped_column(String(120), default="")
     fechaActivacion: Mapped[date] = mapped_column(Date)
+    # El demandante también se verifica con el aliado (RN-01). El valor por
+    # defecto solo lo toman los perfiles que ya existían al agregar la columna:
+    # se dan por aprobados para no romper las cuentas creadas antes de la regla.
+    # Uno nuevo nace PENDIENTE (auth.py).
+    estadoVerificacionActual: Mapped[str] = mapped_column(String(20), index=True, server_default="APROBADA")
 
     municipio: Mapped[str] = mapped_column(String(80), index=True)
     comuna: Mapped[str] = mapped_column(String(80))
     barrio: Mapped[str] = mapped_column(String(80))
     latitud: Mapped[float] = mapped_column(Float)
     longitud: Mapped[float] = mapped_column(Float)
+
+    @property
+    def insigniaVerificado(self) -> bool:
+        return self.estadoVerificacionActual == "APROBADA"
 
 
 class PerfilPrestadorFila(Base):

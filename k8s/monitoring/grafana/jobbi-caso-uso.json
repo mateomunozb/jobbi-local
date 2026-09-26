@@ -239,7 +239,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jobbi_billeteras_bloqueadas)",
+          "expr": "max(jobbi_billeteras_bloqueadas)",
           "legendFormat": "bloqueadas",
           "refId": "A",
           "range": true
@@ -301,7 +301,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jobbi_saldo_pendiente_pesos)",
+          "expr": "max(jobbi_saldo_pendiente_pesos)",
           "legendFormat": "saldo",
           "refId": "A",
           "range": true
@@ -360,7 +360,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jobbi_comisiones_facturadas_efectivo_pesos)",
+          "expr": "max(jobbi_comisiones_facturadas_efectivo_pesos)",
           "legendFormat": "facturadas (Contrataciones)",
           "refId": "A",
           "range": true
@@ -370,7 +370,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jobbi_comisiones_cobradas_pesos)",
+          "expr": "max(jobbi_comisiones_cobradas_pesos)",
           "legendFormat": "cargadas en billetera (Monetización)",
           "refId": "B",
           "range": true
@@ -415,7 +415,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (consumidor, resultado) (rate(jobbi_eventos_consumidos_total[1m])) * 60",
+          "expr": "sum by (consumidor, resultado) (rate(jobbi_eventos_consumidos_total[20s])) * 60",
           "legendFormat": "{{consumidor}} · {{resultado}}",
           "refId": "A",
           "range": true
@@ -473,7 +473,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (route) (rate(jobbi_http_request_duration_seconds_count{service=\"gateway\", route=~\".*check-out|.*check-in|.*acuerdos.*|.*billeteras.*|.*cobro\"}[1m]))",
+          "expr": "sum by (route) (rate(jobbi_http_request_duration_seconds_count{service=\"gateway\", route=~\".*check-out|.*check-in|.*acuerdos.*|.*billeteras.*|.*cobro\"}[20s]))",
           "legendFormat": "{{route}}",
           "refId": "A",
           "range": true
@@ -483,7 +483,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jobbi:http_solicitudes:rate1m{service=\"gateway\"})",
+          "expr": "sum(rate(jobbi_http_request_duration_seconds_count{service=\"gateway\"}[20s]))",
           "legendFormat": "TOTAL gateway",
           "refId": "B",
           "range": true
@@ -528,7 +528,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "jobbi:http_errores:porcentaje",
+          "expr": "100 * (sum by (service) (rate(jobbi_http_request_duration_seconds_count{status=~\"5..\"}[20s])) or 0 * sum by (service) (rate(jobbi_http_request_duration_seconds_count[20s]))) / (sum by (service) (rate(jobbi_http_request_duration_seconds_count[20s])) > 0)",
           "legendFormat": "{{service}}",
           "refId": "A",
           "range": true
@@ -592,7 +592,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
           "legendFormat": "p50",
           "refId": "A",
           "range": true
@@ -602,7 +602,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
           "legendFormat": "p95",
           "refId": "B",
           "range": true
@@ -612,7 +612,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
           "legendFormat": "p99",
           "refId": "C",
           "range": true
@@ -676,7 +676,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\", route=~\".*check-out|.*check-in|.*acuerdos.*|.*billeteras.*|.*cobro\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\", route=~\".*check-out|.*check-in|.*acuerdos.*|.*billeteras.*|.*cobro\"}[20s]))) * 1000",
           "legendFormat": "{{route}}",
           "refId": "A",
           "range": true
@@ -740,7 +740,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_cobro_latencia_seconds_bucket[1m])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_cobro_latencia_seconds_bucket[20s])))",
           "legendFormat": "p50",
           "refId": "A",
           "range": true
@@ -750,7 +750,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_cobro_latencia_seconds_bucket[1m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_cobro_latencia_seconds_bucket[20s])))",
           "legendFormat": "p95",
           "refId": "B",
           "range": true
@@ -795,7 +795,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jobbi_outbox_pendientes) or vector(0)",
+          "expr": "sum(max by (productor) (jobbi_outbox_pendientes)) or vector(0)",
           "legendFormat": "pendientes",
           "refId": "A",
           "range": true
@@ -991,7 +991,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (resultado) (rate(jobbi_dependencia_externa_llamadas_total[1m]))",
+          "expr": "sum by (resultado) (rate(jobbi_dependencia_externa_llamadas_total[20s]))",
           "legendFormat": "{{resultado}}",
           "refId": "A",
           "range": true
@@ -1036,7 +1036,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\", route=\"/api/auth/registro\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\", route=\"/api/auth/registro\"}[20s]))) * 1000",
           "legendFormat": "p95 registro",
           "refId": "A",
           "range": true
@@ -1046,7 +1046,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"confianza\", route=\"/prestadores/{prestador_id}/verificacion\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"confianza\", route=\"/prestadores/{prestador_id}/verificacion\"}[20s]))) * 1000",
           "legendFormat": "p95 verificación en Confianza",
           "refId": "B",
           "range": true
@@ -1098,8 +1098,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Prestadores por estado de verificación (RN-01)",
-      "description": "APROBADA: aparece y trabaja. RECHAZADA: no. PENDIENTE: el aliado no respondió al registrarse; el reverificador lo resuelve cuando el aliado vuelve.",
+      "title": "Verificación de identidad por estado (RN-01)",
+      "description": "APROBADA: trabaja y contrata. RECHAZADA: no. PENDIENTE: el aliado no respondió al registrarse; el reverificador lo resuelve cuando el aliado vuelve. Aplica a prestadores y demandantes.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1111,8 +1111,18 @@
             "uid": "prometheus"
           },
           "expr": "sum by (estado) (jobbi_prestadores_verificacion)",
-          "legendFormat": "{{estado}}",
+          "legendFormat": "prestadores · {{estado}}",
           "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (estado) (jobbi_demandantes_verificacion)",
+          "legendFormat": "demandantes · {{estado}}",
+          "refId": "B",
           "range": true
         }
       ],
@@ -1385,7 +1395,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (servicio) (label_replace(rate(container_network_receive_bytes_total{namespace=\"aws-local\"}[1m]), \"servicio\", \"$1\", \"pod\", \"(.+?)(-[a-z0-9]{8,10}-[a-z0-9]{5}|-[0-9]+)$\"))",
+          "expr": "sum by (servicio) (label_replace(rate(container_network_receive_bytes_total{namespace=\"aws-local\"}[20s]), \"servicio\", \"$1\", \"pod\", \"(.+?)(-[a-z0-9]{8,10}-[a-z0-9]{5}|-[0-9]+)$\"))",
           "legendFormat": "rx {{servicio}}",
           "refId": "A",
           "range": true
@@ -1395,7 +1405,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "-sum by (servicio) (label_replace(rate(container_network_transmit_bytes_total{namespace=\"aws-local\"}[1m]), \"servicio\", \"$1\", \"pod\", \"(.+?)(-[a-z0-9]{8,10}-[a-z0-9]{5}|-[0-9]+)$\"))",
+          "expr": "-sum by (servicio) (label_replace(rate(container_network_transmit_bytes_total{namespace=\"aws-local\"}[20s]), \"servicio\", \"$1\", \"pod\", \"(.+?)(-[a-z0-9]{8,10}-[a-z0-9]{5}|-[0-9]+)$\"))",
           "legendFormat": "tx {{servicio}}",
           "refId": "B",
           "range": true
@@ -1602,7 +1612,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (estado) (jobbi_postgres_conexiones)",
+          "expr": "max by (estado) (jobbi_postgres_conexiones)",
           "legendFormat": "{{estado}}",
           "refId": "A",
           "range": true

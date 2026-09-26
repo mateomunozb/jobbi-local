@@ -1,6 +1,6 @@
 {
   "uid": "jobbi-prueba-05",
-  "title": "5 · Fallo 2 · Servicios: se elimina el Pod de Monetización",
+  "title": "5 · Fallo 2 · Servicios: muere el Pod de Monetización",
   "description": "Guía: docs/guia-de-pruebas.md · Punto 11 · Fallo 2 (Servicios / eliminación de Pod e idempotencia).",
   "tags": [
     "jobbi",
@@ -21,11 +21,11 @@
       "title": "Qué es esta prueba",
       "options": {
         "mode": "markdown",
-        "content": "**Comando:** `./scripts/caos/fallo2-eliminar-pod-monetizacion.sh`  \n**Caso del documento:** Punto 11 · Fallo 2 (Servicios / eliminación de Pod e idempotencia).\n\n**Qué deberías ver:** Pods disponibles cae a 0 y vuelve a 1 en ~11 s (dos veces). Mientras no hay Pod, los publicados siguen (~2/s) y los consumidos caen a 0: los mensajes **visibles** de la cola de Monetización suben (~20) y se drenan de golpe cuando el Pod nuevo arranca. Si el Pod murió con mensajes recibidos sin confirmar, quedan **en vuelo** unos 30 s y luego se cobran. El outbox de Contrataciones sigue en 0: el productor no se entera. La DLQ sigue en 0.\n\n**Criterio de éxito:** reemplazo en segundos e integridad con 0 cobros dobles y 0 comisiones perdidas.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
+        "content": "**Comando:** `./scripts/caos/fallo2-eliminar-pod-monetizacion.sh`  \n**Caso del documento:** Punto 11 · Fallo 2 (Servicios / eliminación de Pod e idempotencia).\n\n**Qué deberías ver:** **Pods de Monetización** cae a 0 y vuelve a 1; mientras no hay Pod, los mensajes **visibles** (esperando) en la cola suben y se drenan de golpe al volver; en **Eventos consumidos** puede aparecer DUPLICADO (descartado, no cobrado); **DLQ** en 0.\n\n**Criterio de éxito:** reemplazo en segundos e integridad con 0 cobros dobles y 0 comisiones perdidas.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas.  \n**En vivo, a mano:** romper `kubectl annotate scaledobject/monetizacion-cola -n aws-local autoscaling.keda.sh/paused-replicas=\"0\" --overwrite` · restaurar el mismo comando terminando en `autoscaling.keda.sh/paused-replicas-`. En la app: hacer check-out (el cobro queda «En curso»)."
       },
       "id": 1,
       "gridPos": {
-        "h": 6,
+        "h": 7,
         "w": 24,
         "x": 0,
         "y": 0
@@ -70,279 +70,10 @@
       },
       "id": 2,
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 6
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Cola de Monetización · visibles vs. en vuelo",
-      "description": "visibles: esperan a un consumidor (suben mientras no hay Pod). en_vuelo: entregados a un worker y aún sin confirmar; si ese worker murió, reaparecen como visibles al vencer el VisibilityTimeout (30 s). La mide el gateway, así que no se corta cuando muere el Pod de Monetización.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max by (estado) (jobbi_sqs_mensajes{cola=\"monetizacion-events-queue\"})",
-          "legendFormat": "{{estado}}",
-          "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(jobbi_sqs_mensajes{cola=\"monetizacion-events-dlq\", estado=\"visibles\"})",
-          "legendFormat": "DLQ",
-          "refId": "B",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 60
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 3,
-      "gridPos": {
-        "h": 8,
-        "w": 16,
-        "x": 8,
-        "y": 6
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Flujo del cobro · publicados en SNS vs. consumidos (por minuto)",
-      "description": "Si los publicados siguen y los consumidos caen a 0, la diferencia es lo que se acumula en la cola; al volver el consumidor aparece un pico que la drena.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(jobbi_eventos_publicados_total{tema=\"contratacion-completada-topic\"}[30s])) * 60",
-          "legendFormat": "publicados por el outbox de Contrataciones",
-          "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(jobbi_eventos_consumidos_total{consumidor=\"monetizacion\"}[30s])) * 60",
-          "legendFormat": "consumidos por Monetización",
-          "refId": "B",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 4,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 14
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Outbox · eventos pendientes de publicar por productor",
-      "description": "Sube solo si SNS o la base del productor fallan. Que el consumidor muera no lo afecta: el relay publica en SNS sin saber quién escucha.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (productor) (jobbi_outbox_pendientes)",
-          "legendFormat": "{{productor}}",
-          "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(jobbi_outbox_pendiente_mas_antiguo_segundos{productor=\"contrataciones\"})",
-          "legendFormat": "edad del más antiguo (s)",
-          "refId": "B",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 5,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 14
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Eventos consumidos por resultado (por minuto)",
-      "description": "COMISION_COBRADA, DUPLICADO (Idempotent Receiver), NOTIFICADO, ERROR.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (consumidor, resultado) (rate(jobbi_eventos_consumidos_total[1m])) * 60",
-          "legendFormat": "{{consumidor}} · {{resultado}}",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 6,
-      "gridPos": {
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 22
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Latencia del cobro asíncrono (check-out → billetera)",
-      "description": "Ventana de consistencia eventual: outbox + relay + SQS + worker.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_cobro_latencia_seconds_bucket[1m])))",
-          "legendFormat": "p50",
-          "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_cobro_latencia_seconds_bucket[1m])))",
-          "legendFormat": "p95",
-          "refId": "B",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 7,
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 22
+        "y": 7
       }
     },
     {
@@ -399,18 +130,18 @@
         "graphMode": "area",
         "textMode": "value"
       },
-      "id": 8,
+      "id": 3,
       "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 0,
-        "y": 29
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 7
       }
     },
     {
       "type": "timeseries",
-      "title": "Uso de memoria por servicio (working set)",
-      "description": "Una curva por servicio, aunque su Pod se haya reemplazado.",
+      "title": "Cola de Monetización · visibles vs. en vuelo",
+      "description": "visibles: esperan a un consumidor (suben mientras no hay Pod). en_vuelo: entregados a un worker y aún sin confirmar; si ese worker murió, reaparecen como visibles al vencer el VisibilityTimeout (30 s). La mide el gateway, así que no se corta cuando muere el Pod de Monetización.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -421,15 +152,29 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (container) ((container_memory_working_set_bytes{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"} and on (id) (container_start_time_seconds{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"} == on (namespace, pod, container) group_left () max by (namespace, pod, container) (container_start_time_seconds{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"}))))",
-          "legendFormat": "{{container}}",
+          "expr": "max by (estado) (jobbi_sqs_mensajes{cola=\"monetizacion-events-queue\"})",
+          "legendFormat": "{{estado}}",
           "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(jobbi_sqs_mensajes{cola=\"monetizacion-events-dlq\", estado=\"visibles\"})",
+          "legendFormat": "DLQ",
+          "refId": "B",
           "range": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes"
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60
+          }
         },
         "overrides": []
       },
@@ -444,12 +189,57 @@
           "sort": "desc"
         }
       },
-      "id": 9,
+      "id": 4,
       "gridPos": {
-        "h": 6,
-        "w": 18,
-        "x": 6,
-        "y": 29
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Eventos consumidos por resultado (por minuto)",
+      "description": "COMISION_COBRADA, DUPLICADO (Idempotent Receiver), NOTIFICADO, ERROR.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (consumidor, resultado) (rate(jobbi_eventos_consumidos_total[20s])) * 60",
+          "legendFormat": "{{consumidor}} · {{resultado}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 14
       }
     }
   ],

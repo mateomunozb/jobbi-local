@@ -74,6 +74,8 @@ fieldset{border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
 .verification-note svg { width:19px; height:19px; flex:none; margin-top:1px; }
 .verification-note p { font-size:12px; line-height:1.55; }
 .verification-note strong { font-size:13px; }
+.verification-note.info { background:var(--brand-soft); color:var(--foreground); }
+.verification-note.info svg { color:var(--brand); }
 
 /* --- Listas conectadas al backend --------------------------------------- */
 .job-card.as-button { width:100%; text-align:left; display:block; color:var(--foreground); }

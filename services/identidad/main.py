@@ -238,6 +238,19 @@ def publicar_verificacion(prestador_id: str, peticion: ResultadoVerificacion, s:
     return PerfilPrestador.model_validate(fila)
 
 
+@app.post("/demandantes/{demandante_id}/verificacion", tags=["demandantes"],
+          response_model=PerfilDemandante, summary="Publicar el veredicto de verificación (lo llama Confianza)")
+def publicar_verificacion_demandante(demandante_id: str, peticion: ResultadoVerificacion,
+                                     s: Session = Depends(sesion)):
+    """RN-01: el demandante también se verifica; solo APROBADA le permite contratar."""
+    fila = s.get(PerfilDemandanteFila, demandante_id)
+    if fila is None:
+        raise HTTPException(404, f"PerfilDemandante '{demandante_id}' no encontrado")
+    fila.estadoVerificacionActual = peticion.estado.value
+    s.commit()
+    return PerfilDemandante.model_validate(fila)
+
+
 # --- Catálogos de enumeraciones -------------------------------------------
 @app.get("/enums", tags=["catálogos"], summary="Enumeraciones que expone este contexto")
 def enumeraciones():

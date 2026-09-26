@@ -70,7 +70,7 @@ en las dos DLQ. Es de solo lectura y se puede correr en cualquier momento.
 |---|---|
 | Inyección | El aliado de verificación simulado ([verificacion_externa](../services/verificacion_externa/main.py)) responde con **8 000 ms** de retardo durante 2 min y luego con **504** durante 1,5 min (`POST /_caos`) |
 | Patrones puestos a prueba | Adapter / ACL ([adaptador_verificacion.py](../services/confianza/adaptador_verificacion.py)) + **Circuit Breaker** ([resiliencia.py](../services/common/resiliencia.py)): timeout 2 s, se abre tras 3 fallos, semiabierto a los 30 s |
-| Hipótesis | El aliado solo se consulta al **registrar** un prestador (y al renovar su veredicto cada 30 días); en la prueba, los prestadores nuevos que k6 registra al bloquearse los anteriores. El circuito se abre en segundos; los registros no se cuelgan y quedan **PENDIENTE** (no aparecen ni trabajan); acuerdos, check-out y cobro no cambian; al retirar el fallo el circuito se cierra solo y el reverificador de fondo resuelve a los PENDIENTE |
+| Hipótesis | El aliado solo se consulta al **registrar** un prestador o un demandante (y al renovar su veredicto cada 30 días); en la prueba, los prestadores nuevos que k6 registra al bloquearse los anteriores. El circuito se abre en segundos; los registros no se cuelgan y quedan **PENDIENTE** (no aparecen ni trabajan); acuerdos, check-out y cobro no cambian; al retirar el fallo el circuito se cierra solo y el reverificador de fondo resuelve a los PENDIENTE |
 | Evidencia | Panel *Circuit Breaker* (CERRADO → ABIERTO → SEMIABIERTO → CERRADO), *Llamadas al aliado* (`rechazada_por_circuito`), *p95 aceptar acuerdo*; logs `circuit_breaker_cambio` en Confianza |
 | Métrica de recuperación | Tiempo desde que se retira el fallo hasta que el circuito vuelve a CERRADO (≤ 30 s + 1 llamada) |
 
@@ -120,6 +120,18 @@ en las dos DLQ. Es de solo lectura y se puede correr en cualquier momento.
 | Mecanismo | cgroup v2 con `memory.oom.group=1`: el kernel mata el contenedor entero → `lastState.terminated.reason = OOMKilled` → Kubernetes lo reinicia en el mismo Pod, con espera creciente (CrashLoopBackOff) si vuelve a morir |
 | Hipótesis | El fallo queda contenido en ese Pod; los eventos se encolan en SQS mientras no hay consumidor y se cobran al volver; sin pérdidas ni dobles cobros; DLQ = 0 |
 | Evidencia | *Memoria · % del límite* (rampa hasta 100 % y caída), *Cola de Monetización · visibles vs. en vuelo* (sube y se drena), *Flujo del cobro*, *Reinicios* (+3), *OOMKilled* = 1, alerta `ContenedorOOMKilled`; eventos `BackOff` de Kubernetes en la bitácora |
+
+### Extra · Escalabilidad horizontal: Monetización escala por su cola
+
+`./scripts/deploy-autoescalado.sh` (una vez) y `./scripts/caos/autoescalado-cola.sh` (~14 min) · tablero *11 · Auto-escalado*
+
+| | |
+|---|---|
+| Mecanismo | **KEDA** lee la profundidad de `monetizacion-events-queue` en LocalStack (escalador `aws-sqs-queue`) y alimenta un **HPA**: réplicas = ⌈mensajes esperando ÷ 100⌉, entre 1 y 3; +1 Pod cada 30 s como máximo, −1 Pod por minuto tras 3 min de calma (`k8s/autoescalado/monetizacion-keda.yaml`) |
+| Inyección | Monetización con 1 hilo y 125 ms simulados por mensaje (`SQS_COSTO_MS`, ~7 msg/s por Pod) + nominal de fondo + eventos publicados en SNS por escalones: ~4 → ~10 → ~18 msg/s en total |
+| Hipótesis | La cola crece cuando la llegada supera la capacidad; el HPA agrega réplicas (1 → 2 → 3) hasta alcanzarla y las retira al pasar la carga (3 → 2 → 1). Varios Pods compiten por la misma cola sin cobrar dos veces (Idempotent Receiver) |
+| Evidencia | *Réplicas · pedidas vs. listas* (escalones), *Cola vs. umbral* (réplicas × 100), *Consumo por Pod* (una curva por réplica), *CPU por Pod* (plana: por eso no se escala por CPU), *Latencia del cobro*; en la bitácora, las decisiones `SuccessfulRescale` del HPA y **publicados = procesados = distintos**; integridad: **0 cobros dobles, 0 comisiones perdidas** |
+| Por qué la cola y no la CPU | El worker espera a SQS y a PostgreSQL más de lo que calcula: la cola se llena con la CPU baja. Es la señal que se usa en AWS (ECS/EKS por `ApproximateNumberOfMessages`) |
 
 ## 3. Plantilla de análisis (por experimento)
 

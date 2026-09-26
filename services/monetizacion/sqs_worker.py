@@ -42,6 +42,11 @@ from .comisiones import estrategia_de_cobro
 from .repositorio import BandejaDeEntrada, RepositorioBilleteras
 
 HILOS = int(os.getenv("SQS_HILOS", "2"))
+# Solo para la prueba de auto-escalado: trabajo simulado por mensaje (p. ej. la
+# llamada a una pasarela de pagos). Fija la capacidad de un Pod en ~1000/COSTO_MS
+# mensajes/s por hilo, para saturarlo con una carga que Minikube sí aguanta.
+# En 0 (lo normal) no hace nada.
+COSTO_MS = float(os.getenv("SQS_COSTO_MS", "0"))
 
 ESTADO: dict[str, Any] = {
     "activo": False,
@@ -49,6 +54,7 @@ ESTADO: dict[str, Any] = {
     "cola": eventos.QUEUE_NAME,
     "dlq": eventos.DLQ_NAME,
     "hilos": HILOS,
+    "costoSimuladoMs": COSTO_MS,
     "recibidos": 0,
     "procesados": 0,
     "duplicados": 0,
@@ -231,6 +237,8 @@ def _bucle(sesiones: sessionmaker[Session]) -> None:
             listos = []
             for mensaje in respuesta.get("Messages", []):
                 _contar("recibidos")
+                if COSTO_MS:
+                    time.sleep(COSTO_MS / 1000)
                 try:
                     resultado = procesar_mensaje(sesiones, mensaje["Body"], mensaje["MessageId"])
                 except Exception as e:  # noqa: BLE001

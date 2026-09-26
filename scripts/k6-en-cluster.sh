@@ -21,9 +21,14 @@
 #
 # El resumen queda en tests/k6/resultados/<escenario>-<fecha>.json; mientras
 # corre, el tablero de Grafana muestra el efecto en el lado del servidor.
+#
+# Otro guion de tests/k6 se elige con la variable de entorno GUION (por defecto
+# el flujo completo e2e-checkout-pubsub.js):
+#   GUION=autoescalado-cola.js ./scripts/k6-en-cluster.sh autoescalado CORRIDA=x
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GUION="${GUION:-e2e-checkout-pubsub.js}"
 ESCENARIO="${1:?Uso: $0 <escenario> [VAR=valor ...]}"
 shift
 NS="pruebas"
@@ -38,6 +43,7 @@ kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/d
 # librería se monta de vuelta en lib/ con `items`.
 kubectl create configmap k6-scripts -n "$NS" \
   --from-file=e2e-checkout-pubsub.js="$ROOT_DIR/tests/k6/e2e-checkout-pubsub.js" \
+  --from-file=autoescalado-cola.js="$ROOT_DIR/tests/k6/autoescalado-cola.js" \
   --from-file=escenarios.js="$ROOT_DIR/tests/k6/lib/escenarios.js" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
@@ -64,7 +70,7 @@ spec:
         # El resumen se imprime entre marcas para recuperarlo de los logs.
         args:
         - >-
-          k6 run ${ARGS} --summary-export /tmp/resumen.json /scripts/e2e-checkout-pubsub.js;
+          k6 run ${ARGS} --summary-export /tmp/resumen.json /scripts/${GUION};
           codigo=\$?; echo '===RESUMEN-K6==='; cat /tmp/resumen.json; echo; echo '===FIN-RESUMEN==='; exit \$codigo
         resources:
           requests: { cpu: "500m", memory: "256Mi" }
@@ -78,6 +84,7 @@ spec:
           name: k6-scripts
           items:
           - { key: e2e-checkout-pubsub.js, path: e2e-checkout-pubsub.js }
+          - { key: autoescalado-cola.js, path: autoescalado-cola.js }
           - { key: escenarios.js, path: lib/escenarios.js }
 EOF
 

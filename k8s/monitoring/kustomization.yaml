@@ -42,3 +42,4 @@ configMapGenerator:
   - grafana/pruebas/08-estres.json
   - grafana/pruebas/09-resistencia.json
   - grafana/pruebas/10-caida-bd.json
+  - grafana/pruebas/11-autoescalado.json

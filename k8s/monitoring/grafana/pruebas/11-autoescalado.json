@@ -1,0 +1,477 @@
+{
+  "uid": "jobbi-prueba-11",
+  "title": "11 · Auto-escalado horizontal de Monetización por la cola",
+  "description": "Guía: docs/guia-de-pruebas.md · Extra · Escalabilidad horizontal: KEDA escala el consumidor por la profundidad de la cola SQS (1 → 3 réplicas).",
+  "tags": [
+    "jobbi",
+    "pruebas"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "editable": true,
+  "panels": [
+    {
+      "type": "text",
+      "title": "Qué es esta prueba",
+      "options": {
+        "mode": "markdown",
+        "content": "**Comando:** `./scripts/caos/autoescalado-cola.sh`  \n**Caso del documento:** Extra · Escalabilidad horizontal: KEDA escala el consumidor por la profundidad de la cola SQS (1 → 3 réplicas).\n\n**Qué deberías ver:** *Requiere una vez `./scripts/deploy-autoescalado.sh`.* **Réplicas** sube en escalones 1 → 2 → 3 (marcas naranjas) y baja 3 → 2 → 1 al pasar la carga; en **Cola vs. umbral**, cada vez que la cola cruza la línea punteada llega un Pod y la cola baja; en **Consumo por Pod** aparece una curva por réplica y el TOTAL alcanza a lo que llega; la **latencia del cobro** sube mientras la cola crece y se recupera al escalar.\n\n**Criterio de éxito:** réplicas 1 → 2 → 3 → 2 → 1 sin intervención; «cada evento se procesó exactamente una vez»; integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
+      },
+      "id": 1,
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Réplicas listas ahora",
+      "description": "Pods de Monetización consumiendo la cola.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kube_deployment_status_replicas_ready{namespace=\"aws-local\", deployment=\"servicio-monetizacion\"})",
+          "legendFormat": "réplicas",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "orange",
+                "value": 3
+              }
+            ]
+          },
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Réplicas de Monetización · pedidas por el HPA vs. listas",
+      "description": "El HPA (que alimenta KEDA con la cola) decide cuántas réplicas hacen falta; «listas» sube unos segundos después, cuando el Pod nuevo arranca y pasa su readiness. Sube de a 1 cada 30 s como máximo y baja de a 1 por minuto tras 3 min de calma.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"aws-local\", horizontalpodautoscaler=\"monetizacion-cola\"})",
+          "legendFormat": "deseadas por el HPA",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kube_deployment_status_replicas_ready{namespace=\"aws-local\", deployment=\"servicio-monetizacion\"})",
+          "legendFormat": "listas (consumiendo)",
+          "refId": "B",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(kube_horizontalpodautoscaler_spec_max_replicas{namespace=\"aws-local\", horizontalpodautoscaler=\"monetizacion-cola\"})",
+          "legendFormat": "máximo (3)",
+          "refId": "C",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 3.5,
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "deseadas por el HPA"
+            },
+            "properties": [
+              {
+                "id": "custom.lineInterpolation",
+                "value": "stepAfter"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "máximo (3)"
+            },
+            "properties": [
+              {
+                "id": "custom.lineInterpolation",
+                "value": "stepAfter"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 9,
+        "w": 18,
+        "x": 6,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cola de Monetización · mensajes esperando vs. umbral para pedir otro Pod",
+      "description": "Regla: réplicas = ⌈esperando ÷ 100⌉. Cuando la curva azul pasa la punteada (con ~10 % de tolerancia), el HPA pide un Pod más; la punteada sube con él y la cola empieza a bajar.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(jobbi_sqs_mensajes{cola=\"monetizacion-events-queue\", estado=\"visibles\"})",
+          "legendFormat": "mensajes esperando",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(kube_horizontalpodautoscaler_spec_target_metric{namespace=\"aws-local\", horizontalpodautoscaler=\"monetizacion-cola\"}) * scalar(sum(kube_deployment_status_replicas_ready{namespace=\"aws-local\", deployment=\"servicio-monetizacion\"}))",
+          "legendFormat": "umbral: réplicas × 100",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "umbral: réplicas × 100"
+            },
+            "properties": [
+              {
+                "id": "custom.lineInterpolation",
+                "value": "stepAfter"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumo por Pod (mensajes/s) · llegan vs. se procesan",
+      "description": "Cada Pod procesa ~7 msg/s durante la prueba (1 hilo, 125 ms simulados por mensaje). «llegan» = procesados + lo que crece la cola: mientras supere al TOTAL, la cola sube; al llegar un Pod nuevo, el TOTAL lo alcanza.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (pod) (rate(jobbi_eventos_consumidos_total{consumidor=\"monetizacion\"}[20s]))",
+          "legendFormat": "{{pod}}",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(jobbi_eventos_consumidos_total{consumidor=\"monetizacion\"}[20s]))",
+          "legendFormat": "TOTAL procesados",
+          "refId": "B",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(jobbi_eventos_consumidos_total{consumidor=\"monetizacion\"}[20s])) + deriv(max(jobbi_sqs_mensajes{cola=\"monetizacion-events-queue\", estado=\"visibles\"})[30s:5s])",
+          "legendFormat": "llegan (estimado)",
+          "refId": "C",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latencia del cobro asíncrono (check-out → billetera)",
+      "description": "Ventana de consistencia eventual: outbox + relay + SQS + worker.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_cobro_latencia_seconds_bucket[20s])))",
+          "legendFormat": "p50",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_cobro_latencia_seconds_bucket[20s])))",
+          "legendFormat": "p95",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "iconColor": "orange",
+        "name": "El HPA cambia las réplicas",
+        "expr": "max(kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"aws-local\", horizontalpodautoscaler=\"monetizacion-cola\"}) and on () (changes(max(kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"aws-local\", horizontalpodautoscaler=\"monetizacion-cola\"})[15s:5s]) > 0)",
+        "step": "5s",
+        "titleFormat": "HPA: réplicas deseadas = {{value}}"
+      }
+    ]
+  }
+}

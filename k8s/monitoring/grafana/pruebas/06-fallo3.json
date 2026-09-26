@@ -21,11 +21,11 @@
       "title": "Qué es esta prueba",
       "options": {
         "mode": "markdown",
-        "content": "**Comando:** `./scripts/caos/fallo3-saturacion-bd.sh`  \n**Caso del documento:** Punto 11 · Fallo 3 (Base de datos / saturación temporal de Aurora Serverless v2 y auto-escalado).\n\n**Qué deberías ver:** *Simulación local de Aurora Serverless v2: el escalador (escalador-bd) mide a PostgreSQL y le cambia CPU y memoria en caliente.* Al empezar la saturación (1:00), la CPU usada se pega a la asignada, el throttling sube y la capacidad sube en escalones: 0,5 → 1 ACU (moderada) y 1 → 2 → 4 ACU (pico, 3:30), con una marca naranja por escalado. La memoria asignada sube con ella y la usada crece con work_mem. Al terminar (6:00) la capacidad baja un escalón cada ~35 s hasta 0,5 ACU. Reinicios de PostgreSQL en 0.\n\n**Criterio de éxito:** la capacidad sube mientras hay saturación y vuelve sola a 0,5 ACU al pasar; 0 reinicios de PostgreSQL; integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
+        "content": "**Comando:** `./scripts/caos/fallo3-saturacion-bd.sh`  \n**Caso del documento:** Punto 11 · Fallo 3 (Base de datos / saturación temporal de Aurora Serverless v2 y auto-escalado).\n\n**Qué deberías ver:** *Simulación local de Aurora Serverless v2.* La **capacidad** sube en escalones 0,5 → 1 → 2 → 4 ACU mientras la **CPU usada** se pega a la asignada (línea punteada), con una marca naranja por escalado, y baja sola a 0,5 al terminar; el **p95 del check-out** sube durante la saturación y se recupera; **Reinicios** en 0.\n\n**Criterio de éxito:** la capacidad sube mientras hay saturación y vuelve sola a 0,5 ACU; 0 reinicios de PostgreSQL; integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
       },
       "id": 1,
       "gridPos": {
-        "h": 6,
+        "h": 7,
         "w": 24,
         "x": 0,
         "y": 0
@@ -97,184 +97,9 @@
       "id": 2,
       "gridPos": {
         "h": 5,
-        "w": 5,
+        "w": 12,
         "x": 0,
-        "y": 6
-      }
-    },
-    {
-      "type": "stat",
-      "title": "CPU asignada a PostgreSQL (núcleos)",
-      "description": "Límite de CPU que Kubernetes aplicó al contenedor (kube-state-metrics). Cambia sin reiniciar el Pod.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(kube_pod_container_resource_limits{namespace=\"aws-local\", container=\"postgres\", resource=\"cpu\"})",
-          "legendFormat": "núcleos",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue",
-                "value": null
-              }
-            ]
-          },
-          "decimals": 2,
-          "color": {
-            "mode": "thresholds"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
-      },
-      "id": 3,
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 5,
-        "y": 6
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Memoria asignada a PostgreSQL",
-      "description": "Límite de memoria que Kubernetes aplicó al contenedor.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(kube_pod_container_resource_limits{namespace=\"aws-local\", container=\"postgres\", resource=\"memory\"})",
-          "legendFormat": "límite",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "purple",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
-      },
-      "id": 4,
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 10,
-        "y": 6
-      }
-    },
-    {
-      "type": "stat",
-      "title": "work_mem por operación",
-      "description": "Memoria de ordenamiento por operación que el escalador fija con ALTER SYSTEM: la base aprovecha la memoria nueva.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(jobbi_bd_work_mem_bytes)",
-          "legendFormat": "work_mem",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
-      },
-      "id": 5,
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 15,
-        "y": 6
+        "y": 7
       }
     },
     {
@@ -331,12 +156,12 @@
         "graphMode": "area",
         "textMode": "value"
       },
-      "id": 6,
+      "id": 3,
       "gridPos": {
         "h": 5,
-        "w": 4,
-        "x": 20,
-        "y": 6
+        "w": 12,
+        "x": 12,
+        "y": 7
       }
     },
     {
@@ -353,7 +178,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"aws-local\", container=\"postgres\"}[30s]))",
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"aws-local\", container=\"postgres\"}[20s]))",
           "legendFormat": "CPU usada",
           "refId": "A",
           "range": true
@@ -471,265 +296,12 @@
           "sort": "desc"
         }
       },
-      "id": 7,
+      "id": 4,
       "gridPos": {
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 11
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "PostgreSQL · memoria usada vs. asignada",
-      "description": "La memoria asignada sube y baja con la capacidad; la usada crece con la carga porque cada nivel permite más work_mem por ordenamiento, y se libera al terminar la saturación.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(container_memory_working_set_bytes{namespace=\"aws-local\", container=\"postgres\"})",
-          "legendFormat": "memoria usada",
-          "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(kube_pod_container_resource_limits{namespace=\"aws-local\", container=\"postgres\", resource=\"memory\"})",
-          "legendFormat": "memoria asignada (límite)",
-          "refId": "B",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(kube_pod_container_resource_requests{namespace=\"aws-local\", container=\"postgres\", resource=\"memory\"})",
-          "legendFormat": "memoria reservada (request)",
-          "refId": "C",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "memoria asignada (límite)"
-            },
-            "properties": [
-              {
-                "id": "custom.lineInterpolation",
-                "value": "stepAfter"
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "purple"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "memoria reservada (request)"
-            },
-            "properties": [
-              {
-                "id": "custom.lineInterpolation",
-                "value": "stepAfter"
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "orange"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 8,
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 11
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "PostgreSQL · % de la CPU asignada en uso",
-      "description": "Por encima de la línea roja (75 %) durante 10 s, la base sube un nivel. Baja cuando lo que usa cabría holgado (≤ 50 %) en el nivel inferior durante 30 s.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "100 * sum(rate(container_cpu_usage_seconds_total{namespace=\"aws-local\", container=\"postgres\"}[30s])) / max(kube_pod_container_resource_limits{namespace=\"aws-local\", container=\"postgres\", resource=\"cpu\"})",
-          "legendFormat": "% de la CPU asignada",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 75
-              }
-            ]
-          },
-          "custom": {
-            "thresholdsStyle": {
-              "mode": "line+area"
-            },
-            "fillOpacity": 5
-          },
-          "max": 110,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 9,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 20
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "PostgreSQL · CPU frenada por su límite (throttling)",
-      "description": "Qué tanto el kernel frenó a PostgreSQL por pedir más CPU de la asignada: es la saturación. Cae al subir la capacidad.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "100 * sum(rate(container_cpu_cfs_throttled_periods_total{namespace=\"aws-local\", container=\"postgres\"}[30s])) / sum(rate(container_cpu_cfs_periods_total{namespace=\"aws-local\", container=\"postgres\"}[30s]))",
-          "legendFormat": "% de periodos frenados",
-          "refId": "A",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "max": 100,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 10,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 20
+        "y": 12
       }
     },
     {
@@ -746,7 +318,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\", route=\"/api/bff/contrataciones/{contratacion_id}/check-out\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\", route=\"/api/bff/contrataciones/{contratacion_id}/check-out\"}[20s]))) * 1000",
           "legendFormat": "p95 check-out",
           "refId": "A",
           "range": true
@@ -756,7 +328,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[1m]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
           "legendFormat": "p95 gateway",
           "refId": "B",
           "range": true
@@ -798,67 +370,12 @@
           "sort": "desc"
         }
       },
-      "id": 11,
+      "id": 5,
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 28
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "PostgreSQL · conexiones de clientes vs. max_connections",
-      "description": "Hueco = la base no respondió (Fallo 3).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (estado) (jobbi_postgres_conexiones)",
-          "legendFormat": "{{estado}}",
-          "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(jobbi_postgres_conexiones_max)",
-          "legendFormat": "max_connections",
-          "refId": "B",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 12,
-      "gridPos": {
-        "h": 8,
+        "h": 9,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 12
       }
     }
   ],

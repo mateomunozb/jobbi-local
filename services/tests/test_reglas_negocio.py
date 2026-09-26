@@ -144,7 +144,11 @@ def _acordar(porcentaje: float, plan: str, medio: str = "EFECTIVO", valor: float
 
 # =====================================================================================
 class TestRN01InsigniaVerificadoCondicionada:
-    """RN-01: insigniaVerificado = true solo con identidad Y antecedentes APROBADOS."""
+    """RN-01: insigniaVerificado = true solo con identidad Y antecedentes APROBADOS.
+
+    Aplica al prestador y también al demandante: los dos pasan por el aliado y,
+    mientras no estén aprobados, no contratan.
+    """
 
     @pytest.mark.parametrize("identidad_, antecedentes, insignia", [
         (A, A, True),
@@ -185,6 +189,63 @@ class TestRN01InsigniaVerificadoCondicionada:
         asyncio.run(gateway.bff_catalogo(categoriaId=None, calificacionMinima=None, municipio=None))
         [filtros] = [params for servicio, ruta, params in pedidos if (servicio, ruta) == ("identidad", "/prestadores")]
         assert filtros["estadoVerificacion"] == "APROBADA"
+
+
+    # --- El demandante también se verifica ------------------------------------------
+
+    def test_el_demandante_nace_sin_insignia_y_pendiente(self):
+        sesion = _registrar("Demandante").json()
+        perfil = sesion["perfilDemandante"]
+        assert (perfil["estadoVerificacionActual"], perfil["insigniaVerificado"], sesion["verificado"]) == (
+            "PENDIENTE", False, False)
+
+    @pytest.mark.parametrize("estado, insignia", [("APROBADA", True), ("PENDIENTE", False), ("RECHAZADA", False)])
+    def test_la_insignia_del_demandante_sigue_al_veredicto(self, estado, insignia):
+        demandante = _registrar("Demandante").json()["perfilDemandante"]["id"]
+        perfil = api_identidad.post(f"/demandantes/{demandante}/verificacion", json={"estado": estado}).json()
+        assert (perfil["estadoVerificacionActual"], perfil["insigniaVerificado"]) == (estado, insignia)
+
+    @pytest.mark.parametrize("antecedentes, estado", [(A, "APROBADA"), (R, "RECHAZADA")])
+    def test_confianza_verifica_al_demandante_y_le_publica_a_su_perfil(self, monkeypatch, antecedentes, estado):
+        rutas = []
+
+        def post(url, **_):
+            rutas.append(url)
+            demandante = url.rstrip("/").split("/")[-2]
+            api_identidad.post(f"/demandantes/{demandante}/verificacion", json={"estado": estado})
+            return type("R", (), {"raise_for_status": lambda self: None})()
+        monkeypatch.setattr(verificacion.httpx, "post", post)
+        monkeypatch.setattr(adaptador, "verificar", lambda sujeto_id, documento: adaptador.ResultadoVerificacion(
+            estados={adaptador.IDENTIDAD: A, adaptador.ANTECEDENTES: antecedentes}, referenciaExterna="x", detalle=""))
+
+        demandante = _registrar("Demandante").json()["perfilDemandante"]["id"]
+        datos = api_confianza.post(f"/demandantes/{demandante}/verificacion", json={"documento": "1017000000"}).json()
+        assert (datos["estado"], datos["tipo"]) == (estado, "DEMANDANTE")
+        assert rutas == [f"{verificacion.IDENTIDAD_URL}/demandantes/{demandante}/verificacion"]
+        assert api_identidad.get(f"/demandantes/{demandante}").json()["estadoVerificacionActual"] == estado
+
+    @pytest.mark.parametrize("estado", ["PENDIENTE", "RECHAZADA"])
+    def test_un_demandante_no_aprobado_no_puede_contratar(self, monkeypatch, estado):
+        _gateway_lee(monkeypatch, {("identidad", "/demandantes/dem-1"): {"estadoVerificacionActual": estado}})
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(gateway._exigir_demandante_verificado("dem-1"))
+        assert error.value.status_code == 409
+        assert "demandante" in error.value.detail
+
+    def test_un_demandante_aprobado_si_puede_contratar(self, monkeypatch):
+        _gateway_lee(monkeypatch, {("identidad", "/demandantes/dem-1"): {"estadoVerificacionActual": "APROBADA"}})
+        asyncio.run(gateway._exigir_demandante_verificado("dem-1"))
+
+    def test_proponer_un_acuerdo_exige_al_demandante_verificado(self, monkeypatch):
+        _gateway_lee(monkeypatch, {
+            ("identidad", "/prestadores/pres-1"): {"estadoVerificacionActual": "APROBADA"},
+            ("identidad", "/demandantes/dem-1"): {"estadoVerificacionActual": "PENDIENTE"},
+        })
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(gateway.bff_proponer_acuerdo({"contactoId": "c-1", "demandanteId": "dem-1",
+                                                      "prestadorId": "pres-1"}))
+        assert error.value.status_code == 409
+        assert "demandante" in error.value.detail
 
 
 # =====================================================================================
@@ -512,6 +573,10 @@ class TestRN08UnPerfilDeCadaTipoPorUsuario:
             insigniaVerificado=False, estadoVerificacionActual=P, planActual=PlanPrestador.FREE,
             calificacionPromedio=0, totalResenas=0, fechaActivacion=date.today(), ubicacionPrincipal=self._ubicacion())
 
+    def _perfil_demandante(self, usuario_id: str) -> PerfilDemandante:
+        return PerfilDemandante(id=_id(), usuarioId=usuario_id, ubicacionPrincipal=self._ubicacion(),
+                                fechaActivacion=date.today(), estadoVerificacionActual=P, insigniaVerificado=False)
+
     def test_el_mismo_correo_no_crea_una_segunda_identidad(self):
         primera = _registrar("Prestador")
         correo = primera.json()["usuario"]["correo"]
@@ -531,14 +596,12 @@ class TestRN08UnPerfilDeCadaTipoPorUsuario:
         usuario = _registrar("Demandante").json()["usuario"]["id"]
         with repo_identidad.abrir() as s:
             with pytest.raises(repo_identidad.PerfilDuplicado):
-                repo_identidad.crear_demandante(s, PerfilDemandante(
-                    id=_id(), usuarioId=usuario, ubicacionPrincipal=self._ubicacion(), fechaActivacion=date.today()))
+                repo_identidad.crear_demandante(s, self._perfil_demandante(usuario))
 
     def test_si_puede_tener_uno_de_cada_tipo(self):
         usuario = _registrar("Prestador").json()["usuario"]["id"]
         with repo_identidad.abrir() as s:
-            repo_identidad.crear_demandante(s, PerfilDemandante(
-                id=_id(), usuarioId=usuario, ubicacionPrincipal=self._ubicacion(), fechaActivacion=date.today()))
+            repo_identidad.crear_demandante(s, self._perfil_demandante(usuario))
             s.commit()
             assert repo_identidad.prestador_de(s, usuario) and repo_identidad.demandante_de(s, usuario)
 
@@ -587,11 +650,13 @@ class TestRN09RestriccionGeograficaFase1:
     def test_proponer_un_acuerdo_aplica_la_regla(self, monkeypatch):
         respuestas = self._perfiles("Medellín", "Rionegro")
         respuestas[("identidad", "/prestadores/pres-1")]["estadoVerificacionActual"] = "APROBADA"
+        respuestas[("identidad", "/demandantes/dem-1")]["estadoVerificacionActual"] = "APROBADA"
         _gateway_lee(monkeypatch, respuestas)
         with pytest.raises(HTTPException) as error:
             asyncio.run(gateway.bff_proponer_acuerdo({"contactoId": "c-1", "demandanteId": "dem-1",
                                                       "prestadorId": "pres-1"}))
         assert error.value.status_code == 409
+        assert "RN-09" in error.value.detail
 
 
 # =====================================================================================
