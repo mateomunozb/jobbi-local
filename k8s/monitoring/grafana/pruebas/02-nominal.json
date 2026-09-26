@@ -1,0 +1,374 @@
+{
+  "uid": "jobbi-prueba-02",
+  "title": "2 · Nominal · 12 TPS",
+  "description": "Guía: docs/guia-de-pruebas.md · Punto 10.4 · Escenario 1 Nominal.",
+  "tags": [
+    "jobbi",
+    "pruebas"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "editable": true,
+  "panels": [
+    {
+      "type": "text",
+      "title": "Qué es esta prueba",
+      "options": {
+        "mode": "markdown",
+        "content": "**Comando:** `./scripts/k6-en-cluster.sh nominal`  \n**Caso del documento:** Punto 10.4 · Escenario 1 Nominal.\n\n**Qué deberías ver:** **Recaudo** ~100 % y **DLQ** en 0; ~12 req/s estables en **Rate**; el **p95** muy por debajo de la línea roja (400 ms) y **Errores** en 0 %.\n\n**Criterio de éxito:** k6 termina con «umbrales cumplidos» (p95 check-out < 300 ms, errores < 1 %, consistencia 100 %).\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
+      },
+      "id": 1,
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Tasa de recaudo de comisión en efectivo",
+      "description": "Comisiones cargadas en billetera ÷ comisiones facturadas en efectivo. Meta ≥ 95 %.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "jobbi:recaudo_comision_efectivo:porcentaje",
+          "legendFormat": "recaudo",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 90
+              },
+              {
+                "color": "green",
+                "value": 95
+              }
+            ]
+          },
+          "decimals": 1,
+          "max": 100,
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Eventos en Dead Letter Queue",
+      "description": "Mensajes apartados tras 5 intentos. Meta = 0; > 0 es alerta P2.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "jobbi:eventos_en_dlq",
+          "legendFormat": "DLQ",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate · solicitudes por segundo (gateway)",
+      "description": "Throughput por endpoint del caso de uso. Nominal ≈ 12 TPS.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (route) (rate(jobbi_http_request_duration_seconds_count{service=\"gateway\", route=~\".*check-out|.*check-in|.*acuerdos.*|.*billeteras.*|.*cobro\"}[20s]))",
+          "legendFormat": "{{route}}",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(jobbi_http_request_duration_seconds_count{service=\"gateway\"}[20s]))",
+          "legendFormat": "TOTAL gateway",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Duration · latencia del gateway (p50 / p95 / p99)",
+      "description": "SLO p95 < 400 ms (línea roja). Mira el p95.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
+          "legendFormat": "p50",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
+          "legendFormat": "p95",
+          "refId": "B",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
+          "legendFormat": "p99",
+          "refId": "C",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 400
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line+area"
+            },
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Errors · % de respuestas 5xx por servicio",
+      "description": "SLO < 1 % (línea roja).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * (sum by (service) (rate(jobbi_http_request_duration_seconds_count{status=~\"5..\"}[20s])) or 0 * sum by (service) (rate(jobbi_http_request_duration_seconds_count[20s]))) / (sum by (service) (rate(jobbi_http_request_duration_seconds_count[20s])) > 0)",
+          "legendFormat": "{{service}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line+area"
+            },
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}

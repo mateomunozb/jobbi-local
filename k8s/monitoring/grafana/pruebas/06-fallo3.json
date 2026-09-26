@@ -1,0 +1,402 @@
+{
+  "uid": "jobbi-prueba-06",
+  "title": "6 · Fallo 3 · Base de datos saturada: auto-escalado en caliente",
+  "description": "Guía: docs/guia-de-pruebas.md · Punto 11 · Fallo 3 (Base de datos / saturación temporal de Aurora Serverless v2 y auto-escalado).",
+  "tags": [
+    "jobbi",
+    "pruebas"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "editable": true,
+  "panels": [
+    {
+      "type": "text",
+      "title": "Qué es esta prueba",
+      "options": {
+        "mode": "markdown",
+        "content": "**Comando:** `./scripts/caos/fallo3-saturacion-bd.sh`  \n**Caso del documento:** Punto 11 · Fallo 3 (Base de datos / saturación temporal de Aurora Serverless v2 y auto-escalado).\n\n**Qué deberías ver:** *Simulación local de Aurora Serverless v2.* La **capacidad** sube en escalones 0,5 → 1 → 2 → 4 ACU mientras la **CPU usada** se pega a la asignada (línea punteada), con una marca naranja por escalado, y baja sola a 0,5 al terminar; el **p95 del check-out** sube durante la saturación y se recupera; **Reinicios** en 0.\n\n**Criterio de éxito:** la capacidad sube mientras hay saturación y vuelve sola a 0,5 ACU; 0 reinicios de PostgreSQL; integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas."
+      },
+      "id": 1,
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Capacidad de la base (ACU)",
+      "description": "Nivel que asignó el escalador: 0,5 (normal) → 1 → 2 → 4. 1 ACU local ≈ 1 núcleo y ~1 GiB.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(jobbi_bd_capacidad_acu)",
+          "legendFormat": "ACU",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          },
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Reinicios de PostgreSQL",
+      "description": "Debe quedarse igual: el escalado es en caliente.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"aws-local\", container=\"postgres\"}) or vector(0)",
+          "legendFormat": "reinicios",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "PostgreSQL · CPU usada vs. asignada (núcleos)",
+      "description": "La línea punteada es la capacidad: sube en escalones cuando la CPU usada se pega al límite y baja cuando pasa la saturación. Mientras la usada toca el límite, la base está frenada (ver throttling).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"aws-local\", container=\"postgres\"}[20s]))",
+          "legendFormat": "CPU usada",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(kube_pod_container_resource_limits{namespace=\"aws-local\", container=\"postgres\", resource=\"cpu\"})",
+          "legendFormat": "CPU asignada (límite)",
+          "refId": "B",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(kube_pod_container_resource_requests{namespace=\"aws-local\", container=\"postgres\", resource=\"cpu\"})",
+          "legendFormat": "CPU reservada (request)",
+          "refId": "C",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU asignada (límite)"
+            },
+            "properties": [
+              {
+                "id": "custom.lineInterpolation",
+                "value": "stepAfter"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU reservada (request)"
+            },
+            "properties": [
+              {
+                "id": "custom.lineInterpolation",
+                "value": "stepAfter"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Impacto en el usuario · p95 del check-out (lee y escribe en la base)",
+      "description": "Puede subir mientras la base está frenada y vuelve a bajar cuando el escalador le da capacidad.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\", route=\"/api/bff/contrataciones/{contratacion_id}/check-out\"}[20s]))) * 1000",
+          "legendFormat": "p95 check-out",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\"}[20s]))) * 1000",
+          "legendFormat": "p95 gateway",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 400
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line+area"
+            },
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "iconColor": "orange",
+        "name": "Escalado de la base",
+        "expr": "sum by (direccion) (increase(jobbi_bd_escalados_total[10s])) > 0",
+        "step": "5s",
+        "titleFormat": "Base: {{direccion}} de capacidad",
+        "tagKeys": "direccion"
+      }
+    ]
+  }
+}

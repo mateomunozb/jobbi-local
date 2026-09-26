@@ -1,0 +1,15 @@
+apiVersion: 1
+providers:
+- name: jobbi
+  folder: JOBBI
+  type: file
+  # Editable en la interfaz para explorar; lo que vale es el JSON del repositorio.
+  allowUiUpdates: true
+  options:
+    path: /var/lib/grafana/dashboards
+- name: jobbi-pruebas
+  folder: JOBBI · Pruebas (un tablero por prueba)
+  type: file
+  allowUiUpdates: true
+  options:
+    path: /var/lib/grafana/dashboards-pruebas

@@ -1,0 +1,92 @@
+# Reglas de grabación y alertas de JOBBI.
+#
+# Las de grabación dejan precalculadas las series que usan los tableros; las
+# alertas traducen los SLO y metas de las tablas 8.1.2 y 8.1.3 (se ven en
+# Prometheus → Alerts; no hay Alertmanager en el entorno local).
+groups:
+- name: jobbi-registro
+  rules:
+  # Tabla 8.1.4: el nombre que esperan los paneles de CPU. Ventana de 20 s, como
+  # la de los paneles, para que la CPU refleje un cambio casi en vivo. Sin esta regla (que en
+  # otros clústeres trae kube-prometheus) los paneles quedan en N/A.
+  - record: node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate
+    expr: |
+      sum by (namespace, pod, container) (
+        rate(container_cpu_usage_seconds_total{container!="", container!="POD", image!=""}[20s])
+      )
+
+  # Negocio (8.1.3). Con denominador 0 no hay dato (no un porcentaje inventado).
+  # max y no sum: cada réplica de Monetización publica el mismo total leído de
+  # la base; con el auto-escalado habría hasta 3 copias de la misma serie.
+  - record: jobbi:recaudo_comision_efectivo:porcentaje
+    expr: |
+      100 * max(jobbi_comisiones_cobradas_pesos)
+        / (max(jobbi_comisiones_facturadas_efectivo_pesos) > 0)
+  - record: jobbi:match_rate:porcentaje
+    expr: |
+      100 * sum(jobbi_contactos_iniciados)
+        / (sum(jobbi_busquedas_registradas) > 0)
+  - record: jobbi:eventos_en_dlq
+    # max por cola: la exportan su consumidor y el gateway (sumarlas la duplicaría).
+    expr: sum(max by (cola) (jobbi_sqs_mensajes{cola=~".*-dlq", estado="visibles"})) or vector(0)
+
+  # Técnicas (8.1.2): RED por servicio
+  - record: jobbi:http_solicitudes:rate1m
+    expr: sum by (service) (rate(jobbi_http_request_duration_seconds_count[1m]))
+  # Un servicio sin 5xx no tiene esa serie: el `or` lo completa con 0 para que
+  # el panel muestre 0 % y no "No data".
+  - record: jobbi:http_errores:porcentaje
+    expr: |
+      100 * (
+        sum by (service) (rate(jobbi_http_request_duration_seconds_count{status=~"5.."}[1m]))
+        or
+        0 * sum by (service) (rate(jobbi_http_request_duration_seconds_count[1m]))
+      ) / (sum by (service) (rate(jobbi_http_request_duration_seconds_count[1m])) > 0)
+  - record: jobbi:http_latencia_p95:segundos
+    expr: histogram_quantile(0.95, sum by (service, le) (rate(jobbi_http_request_duration_seconds_bucket[1m])))
+
+- name: jobbi-alertas
+  rules:
+  - alert: EventosEnDLQ
+    expr: jobbi:eventos_en_dlq > 0
+    labels: { severity: P2 }
+    annotations:
+      summary: "Hay {{ $value }} mensaje(s) en una DLQ: una comisión o un aviso no se pudo procesar"
+  - alert: TasaDeErroresAlta
+    expr: jobbi:http_errores:porcentaje > 1
+    for: 1m
+    labels: { severity: P2 }
+    annotations:
+      summary: "{{ $labels.service }} responde 5xx en el {{ $value | printf \"%.1f\" }}% de las peticiones (SLO < 1%)"
+  - alert: LatenciaP95Alta
+    expr: jobbi:http_latencia_p95:segundos{service="gateway"} > 0.4
+    for: 2m
+    labels: { severity: P3 }
+    annotations:
+      summary: "p95 del gateway en {{ $value | humanizeDuration }} (SLO < 400 ms)"
+  - alert: BacklogOutboxAlto
+    expr: sum(max by (productor) (jobbi_outbox_pendientes)) > 30
+    for: 1m
+    labels: { severity: P3 }
+    annotations:
+      summary: "{{ $value }} eventos sin publicar en el outbox (alerta si > 30)"
+  - alert: RecaudoBajo
+    expr: jobbi:recaudo_comision_efectivo:porcentaje < 95
+    for: 10m
+    labels: { severity: P3 }
+    annotations:
+      summary: "Recaudo de comisión en efectivo en {{ $value | printf \"%.1f\" }}% (meta >= 95%)"
+  - alert: PodCercaDelLimiteDeMemoria
+    expr: |
+      100 * sum by (namespace, pod, container) (container_memory_working_set_bytes{namespace="aws-local", container!="", container!="POD"})
+        / on (namespace, pod, container) sum by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="aws-local", resource="memory"})
+        > 80
+    for: 2m
+    labels: { severity: P3 }
+    annotations:
+      summary: "{{ $labels.pod }} usa el {{ $value | printf \"%.0f\" }}% de su límite de memoria"
+  - alert: ContenedorOOMKilled
+    expr: kube_pod_container_status_last_terminated_reason{namespace="aws-local", reason="OOMKilled"} == 1
+    labels: { severity: P2 }
+    annotations:
+      summary: "{{ $labels.pod }} fue terminado por OOMKilled"

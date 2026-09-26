@@ -1,0 +1,54 @@
+# API Gateway: único punto de entrada al backend.
+#
+# Se expone como NodePort (30080) para que sea alcanzable desde cualquier
+# máquina con `minikube service`, sin depender de un Ingress Controller.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: aws-local
+  labels: { app: api-gateway }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: api-gateway }
+  template:
+    metadata:
+      labels: { app: api-gateway }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8080", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: gateway
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8080 }]
+        env:
+        - { name: SERVICE_MODULE, value: "gateway" }
+        - { name: PORT, value: "8080" }
+        - { name: K8S_NAMESPACE, value: "aws-local" }
+        readinessProbe:
+          httpGet: { path: /health, port: 8080 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8080 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "100m", memory: "128Mi" }
+          limits: { cpu: "500m", memory: "384Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: aws-local
+spec:
+  type: NodePort
+  selector: { app: api-gateway }
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    nodePort: 30080

@@ -1,0 +1,288 @@
+{
+  "uid": "jobbi-prueba-07",
+  "title": "7 · Fallo 4 · Recursos: OOMKilled en Monetización",
+  "description": "Guía: docs/guia-de-pruebas.md · Punto 11 · Fallo 4 (Recursos / OOMKilled).",
+  "tags": [
+    "jobbi",
+    "pruebas"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "editable": true,
+  "panels": [
+    {
+      "type": "text",
+      "title": "Qué es esta prueba",
+      "options": {
+        "mode": "markdown",
+        "content": "**Comando:** `./scripts/caos/fallo4-oomkilled.sh`  \n**Caso del documento:** Punto 11 · Fallo 4 (Recursos / OOMKilled).\n\n**Qué deberías ver:** la **memoria** de Monetización sube en rampa hasta el 100 % del límite (256 Mi) y cae; **OOMKilled** pasa a 1 y **Reinicios** sube; mientras el contenedor está caído, los mensajes **visibles** (esperando) en la cola suben y se drenan al volver.\n\n**Criterio de éxito:** OOMKilled = 1, el contenedor vuelve solo, la cola vuelve a 0, DLQ = 0 e integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas.  \n**En vivo, a mano:** `kubectl exec -n aws-local deploy/servicio-monetizacion -- python -c` con una fuga de 4 MiB/s (ver docs/guia-de-pruebas.md). En la app: el check-out funciona y el cobro espera en la cola."
+      },
+      "id": 1,
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Contenedores terminados por OOMKilled",
+      "description": "Motivo de la última terminación según kube-state-metrics.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kube_pod_container_status_last_terminated_reason{namespace=\"aws-local\", reason=\"OOMKilled\"}) or vector(0)",
+          "legendFormat": "OOMKilled",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Reinicios de Monetización",
+      "description": "Sube cada vez que el contenedor muere y Kubernetes lo reinicia en el mismo Pod.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"aws-local\", container=\"monetizacion\"}) or vector(0)",
+          "legendFormat": "reinicios",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memoria · % del límite en el tiempo",
+      "description": "La rampa hacia el 100 % y la caída al morir el contenedor.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (container) (100 * sum by (namespace, pod, container) ((container_memory_working_set_bytes{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"} and on (id) (container_start_time_seconds{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"} == on (namespace, pod, container) group_left () max by (namespace, pod, container) (container_start_time_seconds{namespace=\"aws-local\", container!=\"\", container!=\"POD\", container=~\"monetizacion\"})))) / on (namespace, pod, container) sum by (namespace, pod, container) (kube_pod_container_resource_limits{namespace=\"aws-local\", resource=\"memory\", container=~\"monetizacion\"}))",
+          "legendFormat": "{{container}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line+area"
+            },
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cola de Monetización · visibles vs. en vuelo",
+      "description": "visibles: esperan a un consumidor (suben mientras no hay Pod). en_vuelo: entregados a un worker y aún sin confirmar; si ese worker murió, reaparecen como visibles al vencer el VisibilityTimeout (30 s). La mide el gateway, así que no se corta cuando muere el Pod de Monetización.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (estado) (jobbi_sqs_mensajes{cola=\"monetizacion-events-queue\"})",
+          "legendFormat": "{{estado}}",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(jobbi_sqs_mensajes{cola=\"monetizacion-events-dlq\", estado=\"visibles\"})",
+          "legendFormat": "DLQ",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}

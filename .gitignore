@@ -1,0 +1,31 @@
+# Dependencias y artefactos de build del frontend
+node_modules/
+.next/
+next-env.d.ts
+
+# Variables de entorno
+.env*.local
+
+# Archivos internos del sandbox v0 (prototipo navegable)
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.v0-trash/
+.vercel/
+
+# Sistema operativo
+.DS_Store
+
+# Entorno virtual, logs y datos locales del backend
+.venv/
+.logs/
+.datos/
+__pycache__/
+*.pyc
+
+# Resúmenes de las pruebas de carga k6
+tests/k6/resultados/
+
+# Bitácoras de los experimentos de fallos (scripts/caos)
+tests/caos/resultados/

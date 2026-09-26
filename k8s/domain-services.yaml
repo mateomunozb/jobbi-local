@@ -1,0 +1,442 @@
+# Microservicios de dominio de JOBBI.
+#
+# Todos corren la misma imagen (jobbi/backend:v1) y se diferencian por la
+# variable SERVICE_MODULE: un Pod y un Service por contexto delimitado, de modo
+# que la frontera del dominio también es una frontera de red y de despliegue.
+#
+# Monetización vive en k8s/monetizacion-deployment.yaml porque además consume
+# SQS y conserva el nombre de Service original (servicio-monetizacion).
+#
+# Cada Deployment recibe la URL de su propia base (`jobbi_<contexto>`) desde el
+# Secret postgres-urls: ningún servicio conoce la cadena de conexión de otro.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identidad
+  namespace: aws-local
+  labels: { app: identidad, contexto: identidad-perfiles }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: identidad }
+  template:
+    metadata:
+      labels: { app: identidad, contexto: identidad-perfiles }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8001", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: identidad
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8001 }]
+        env:
+        - { name: SERVICE_MODULE, value: "identidad" }
+        - { name: PORT, value: "8001" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: identidad }
+        readinessProbe:
+          httpGet: { path: /health, port: 8001 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8001 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identidad
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: identidad }
+  ports: [{ name: http, port: 8001, targetPort: 8001 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mercado
+  namespace: aws-local
+  labels: { app: mercado, contexto: mercado-oficios }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: mercado }
+  template:
+    metadata:
+      labels: { app: mercado, contexto: mercado-oficios }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8002", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: mercado
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8002 }]
+        env:
+        - { name: SERVICE_MODULE, value: "mercado" }
+        - { name: PORT, value: "8002" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: mercado }
+        readinessProbe:
+          httpGet: { path: /health, port: 8002 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8002 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mercado
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: mercado }
+  ports: [{ name: http, port: 8002, targetPort: 8002 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: contrataciones
+  namespace: aws-local
+  # Componente del subdominio Mercado de Oficios: el ciclo de vida de la
+  # contratación y su outbox se despliegan aparte (con su propia base) para
+  # que el evento CONTRATACION_COMPLETADA nazca en una transacción aislada.
+  labels: { app: contrataciones, contexto: contrataciones, subdominio: mercado-oficios }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: contrataciones }
+  template:
+    metadata:
+      labels: { app: contrataciones, contexto: contrataciones, subdominio: mercado-oficios }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8003", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: contrataciones
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8003 }]
+        env:
+        - { name: SERVICE_MODULE, value: "contrataciones" }
+        - { name: PORT, value: "8003" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: contrataciones }
+        # Productor del evento CONTRATACION_COMPLETADA (outbox → SNS).
+        - name: AWS_ENDPOINT_URL
+          value: "http://localstack.aws-local.svc.cluster.local:4566"
+        - { name: AWS_REGION, value: "us-east-1" }
+        - { name: SNS_TOPIC_NAME, value: "contratacion-completada-topic" }
+        - { name: SNS_ENABLED, value: "true" }
+        readinessProbe:
+          httpGet: { path: /health, port: 8003 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8003 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: contrataciones
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: contrataciones }
+  ports: [{ name: http, port: 8003, targetPort: 8003 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: comunicacion
+  namespace: aws-local
+  labels: { app: comunicacion, contexto: comunicacion }
+spec:
+  # Una sola réplica: las salas del chat en tiempo real (WebSocket) viven en la
+  # memoria del proceso. Escalar requiere un canal compartido entre réplicas
+  # (p. ej. Redis pub/sub); ver services/comunicacion/salas.py.
+  replicas: 1
+  selector:
+    matchLabels: { app: comunicacion }
+  template:
+    metadata:
+      labels: { app: comunicacion, contexto: comunicacion }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8004", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: comunicacion
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8004 }]
+        env:
+        - { name: SERVICE_MODULE, value: "comunicacion" }
+        - { name: PORT, value: "8004" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: comunicacion }
+        # Consumidor de BILLETERA_BLOQUEADA (SNS → SQS); el destinatario de la
+        # notificación se lo pide a Identidad, dueña del perfil.
+        - name: AWS_ENDPOINT_URL
+          value: "http://localstack.aws-local.svc.cluster.local:4566"
+        - { name: AWS_REGION, value: "us-east-1" }
+        - { name: QUEUE_COMUNICACION, value: "comunicacion-events-queue" }
+        - { name: QUEUE_COMUNICACION_DLQ, value: "comunicacion-events-dlq" }
+        - { name: SQS_ENABLED, value: "true" }
+        - name: SERVICIO_IDENTIDAD_URL
+          value: "http://identidad.aws-local.svc.cluster.local:8001"
+        readinessProbe:
+          httpGet: { path: /health, port: 8004 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8004 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: comunicacion
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: comunicacion }
+  ports: [{ name: http, port: 8004, targetPort: 8004 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: confianza
+  namespace: aws-local
+  labels: { app: confianza, contexto: confianza-verificacion }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: confianza }
+  template:
+    metadata:
+      labels: { app: confianza, contexto: confianza-verificacion }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8005", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: confianza
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8005 }]
+        env:
+        - { name: SERVICE_MODULE, value: "confianza" }
+        - { name: PORT, value: "8005" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: confianza }
+        # Aliado de verificación (simulado) tras Adapter + Circuit Breaker:
+        # timeout por llamada, fallos seguidos para abrir y espera antes de
+        # probar de nuevo (semiabierto).
+        - name: VERIFICACION_URL
+          value: "http://verificacion-externa.aws-local.svc.cluster.local:8010"
+        - { name: VERIFICACION_TIMEOUT_SEGUNDOS, value: "2" }
+        - { name: CB_UMBRAL_FALLOS, value: "3" }
+        - { name: CB_ESPERA_SEGUNDOS, value: "30" }
+        # Un veredicto del aliado vale 30 días: dentro de ese plazo no se le
+        # vuelve a consultar (cada consulta cuesta dinero).
+        - { name: VERIFICACION_VIGENCIA_DIAS, value: "30" }
+        # Reverificador de fondo: reintenta los PENDIENTE (aliado caído al
+        # registrarse) y renueva los vencidos; publica el veredicto en Identidad.
+        - { name: VERIFICACION_REINTENTOS, value: "true" }
+        - { name: VERIFICACION_REINTENTO_SEGUNDOS, value: "15" }
+        - name: SERVICIO_IDENTIDAD_URL
+          value: "http://identidad.aws-local.svc.cluster.local:8001"
+        readinessProbe:
+          httpGet: { path: /health, port: 8005 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8005 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: confianza
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: confianza }
+  ports: [{ name: http, port: 8005, targetPort: 8005 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: soporte
+  namespace: aws-local
+  labels: { app: soporte, contexto: soporte-disputas }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: soporte }
+  template:
+    metadata:
+      labels: { app: soporte, contexto: soporte-disputas }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8006", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: soporte
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8006 }]
+        env:
+        - { name: SERVICE_MODULE, value: "soporte" }
+        - { name: PORT, value: "8006" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: soporte }
+        readinessProbe:
+          httpGet: { path: /health, port: 8006 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8006 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: soporte
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: soporte }
+  ports: [{ name: http, port: 8006, targetPort: 8006 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adquisicion
+  namespace: aws-local
+  labels: { app: adquisicion, contexto: adquisicion-distribucion }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: adquisicion }
+  template:
+    metadata:
+      labels: { app: adquisicion, contexto: adquisicion-distribucion }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8007", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: adquisicion
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8007 }]
+        env:
+        - { name: SERVICE_MODULE, value: "adquisicion" }
+        - { name: PORT, value: "8007" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: adquisicion }
+        readinessProbe:
+          httpGet: { path: /health, port: 8007 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8007 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adquisicion
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: adquisicion }
+  ports: [{ name: http, port: 8007, targetPort: 8007 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proteccion
+  namespace: aws-local
+  labels: { app: proteccion, contexto: proteccion-seguros }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: proteccion }
+  template:
+    metadata:
+      labels: { app: proteccion, contexto: proteccion-seguros }
+      # Prometheus descubre el Pod por estas anotaciones (k8s/monitoring).
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8008", prometheus.io/path: /metrics }
+    spec:
+      containers:
+      - name: proteccion
+        image: jobbi/backend:v1
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8008 }]
+        env:
+        - { name: SERVICE_MODULE, value: "proteccion" }
+        - { name: PORT, value: "8008" }
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: { name: postgres-urls, key: proteccion }
+        readinessProbe:
+          httpGet: { path: /health, port: 8008 }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 8008 }
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proteccion
+  namespace: aws-local
+spec:
+  type: ClusterIP
+  selector: { app: proteccion }
+  ports: [{ name: http, port: 8008, targetPort: 8008 }]

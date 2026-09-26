@@ -1,0 +1,300 @@
+{
+  "uid": "jobbi-prueba-04",
+  "title": "4 · Fallo 1 · Red: el aliado de verificación se cae",
+  "description": "Guía: docs/guia-de-pruebas.md · Punto 11 · Fallo 1 (Red / dependencia externa).",
+  "tags": [
+    "jobbi",
+    "pruebas"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "editable": true,
+  "panels": [
+    {
+      "type": "text",
+      "title": "Qué es esta prueba",
+      "options": {
+        "mode": "markdown",
+        "content": "**Comando:** `./scripts/caos/fallo1-dependencia-externa.sh`  \n**Caso del documento:** Punto 11 · Fallo 1 (Red / dependencia externa).\n\n**Qué deberías ver:** el **Circuit Breaker** pasa de CERRADO a ABIERTO (rojo) al caer el aliado y vuelve a CERRADO al restaurarlo; los **Pods del aliado** caen a 0 y vuelven a 1; en **Verificación** crece PENDIENTE durante la caída y baja a 0 cuando el reverificador aprueba a los pendientes; el **p95 del registro** no se dispara: nadie se queda colgado.\n\n**Criterio de éxito:** el circuito se abre y se cierra solo, los PENDIENTE se resuelven solos e integridad OK.\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas.  \n**En vivo, a mano:** romper `kubectl scale deploy/verificacion-externa -n aws-local --replicas=0` · restaurar `--replicas=1`. En la app: registrar un prestador o demandante (queda «Verificación pendiente»)."
+      },
+      "id": 1,
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Circuit Breaker · aliado de verificación",
+      "description": "0 CERRADO · 1 SEMIABIERTO · 2 ABIERTO. Se abre tras 3 fallos (timeout 2 s); prueba de nuevo a los 30 s.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(jobbi_circuit_breaker_estado{dependencia=\"verificacion-externa\"}) or vector(0)",
+          "legendFormat": "estado",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "CERRADO",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "SEMIABIERTO",
+                  "color": "yellow"
+                },
+                "2": {
+                  "text": "ABIERTO",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pods disponibles · aliado, Confianza y gateway",
+      "description": "El aliado cae a 0 en la fase «apagado» del Fallo 1; Confianza y el gateway siguen en 1.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (deployment) (kube_deployment_status_replicas_available{namespace=\"aws-local\", deployment=~\"verificacion-externa|confianza|api-gateway\"})",
+          "legendFormat": "{{deployment}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 7,
+        "w": 16,
+        "x": 8,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Verificación de identidad por estado (RN-01)",
+      "description": "APROBADA: trabaja y contrata. RECHAZADA: no. PENDIENTE: el aliado no respondió al registrarse; el reverificador lo resuelve cuando el aliado vuelve. Aplica a prestadores y demandantes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (estado) (jobbi_prestadores_verificacion)",
+          "legendFormat": "prestadores · {{estado}}",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (estado) (jobbi_demandantes_verificacion)",
+          "legendFormat": "demandantes · {{estado}}",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 · registro de usuarios (incluye la verificación RN-01)",
+      "description": "Al registrarse, el prestador se verifica con el aliado. Sin Circuit Breaker, cada registro esperaría los 8 s del aliado.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"gateway\", route=\"/api/auth/registro\"}[20s]))) * 1000",
+          "legendFormat": "p95 registro",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(jobbi_http_request_duration_seconds_bucket{service=\"confianza\", route=\"/prestadores/{prestador_id}/verificacion\"}[20s]))) * 1000",
+          "legendFormat": "p95 verificación en Confianza",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 400
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line+area"
+            },
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}

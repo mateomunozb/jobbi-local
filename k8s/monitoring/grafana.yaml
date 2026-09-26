@@ -1,0 +1,63 @@
+# Grafana: visualiza las series de Prometheus.
+#
+# Todo llega aprovisionado: la fuente de datos (Prometheus) y el tablero del caso
+# de uso. No guarda estado propio: si el Pod se reinicia, vuelve igual.
+#
+#   kubectl port-forward svc/grafana 3001:3000 -n monitoring  →  http://localhost:3001
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels: { app: grafana }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: grafana }
+  template:
+    metadata:
+      labels: { app: grafana }
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:11.2.0
+        ports: [{ containerPort: 3000, name: http }]
+        env:
+        # Credenciales de desarrollo (solo entorno local). Sin iniciar sesión se
+        # entra como lector y se ve el tablero.
+        - { name: GF_SECURITY_ADMIN_USER, value: "admin" }
+        - { name: GF_SECURITY_ADMIN_PASSWORD, value: "jobbi" }
+        - { name: GF_AUTH_ANONYMOUS_ENABLED, value: "true" }
+        - { name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: "Viewer" }
+        # Inicio: el índice con un tablero por prueba (docs/guia-de-pruebas.md).
+        - { name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH, value: "/var/lib/grafana/dashboards-pruebas/00-indice.json" }
+        - { name: GF_ANALYTICS_REPORTING_ENABLED, value: "false" }
+        - { name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false" }
+        readinessProbe:
+          httpGet: { path: /api/health, port: 3000 }
+          periodSeconds: 10
+        resources:
+          requests: { cpu: "50m", memory: "96Mi" }
+          limits: { cpu: "500m", memory: "256Mi" }
+        volumeMounts:
+        - { name: fuentes, mountPath: /etc/grafana/provisioning/datasources/datasources.yml, subPath: datasources.yml }
+        - { name: fuentes, mountPath: /etc/grafana/provisioning/dashboards/dashboards.yml, subPath: dashboards.yml }
+        - { name: tableros, mountPath: /var/lib/grafana/dashboards }
+        - { name: tableros-pruebas, mountPath: /var/lib/grafana/dashboards-pruebas }
+      volumes:
+      - name: fuentes
+        configMap: { name: grafana-provisioning }
+      - name: tableros
+        configMap: { name: grafana-dashboards }
+      - name: tableros-pruebas
+        configMap: { name: grafana-dashboards-pruebas }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  type: ClusterIP
+  selector: { app: grafana }
+  ports: [{ name: http, port: 3000, targetPort: 3000 }]

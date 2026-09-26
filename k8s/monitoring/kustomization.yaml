@@ -1,0 +1,45 @@
+# Observabilidad de JOBBI en Minikube: Prometheus + Grafana + kube-state-metrics.
+#
+#   kubectl apply -k k8s/monitoring        (o ./scripts/deploy-monitoring.sh)
+#
+# La configuración de Prometheus, sus reglas y el tablero de Grafana viven como
+# archivos y se empaquetan en ConfigMaps. El sufijo de hash que añade kustomize
+# hace que cambiar cualquiera de ellos reinicie el Deployment que lo usa.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+
+resources:
+- namespace.yaml
+- prometheus.yaml
+- kube-state-metrics.yaml
+- grafana.yaml
+
+configMapGenerator:
+- name: prometheus-config
+  files:
+  - prometheus/prometheus.yml
+  - prometheus/reglas.yml
+- name: grafana-provisioning
+  files:
+  - grafana/datasources.yml
+  - grafana/dashboards.yml
+- name: grafana-dashboards
+  files:
+  - grafana/jobbi-caso-uso.json
+# Un tablero por prueba (docs/guia-de-pruebas.md). Se generan con
+# grafana/generar_tableros.py; no se editan a mano.
+- name: grafana-dashboards-pruebas
+  files:
+  - grafana/pruebas/00-indice.json
+  - grafana/pruebas/01-humo.json
+  - grafana/pruebas/02-nominal.json
+  - grafana/pruebas/03-pico.json
+  - grafana/pruebas/04-fallo1.json
+  - grafana/pruebas/05-fallo2.json
+  - grafana/pruebas/06-fallo3.json
+  - grafana/pruebas/07-fallo4.json
+  - grafana/pruebas/08-estres.json
+  - grafana/pruebas/09-resistencia.json
+  - grafana/pruebas/10-caida-bd.json
+  - grafana/pruebas/11-autoescalado.json

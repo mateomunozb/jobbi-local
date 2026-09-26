@@ -1,0 +1,54 @@
+# Saturador de la base para el Fallo 3 (lo crea fallo3-saturacion-bd.sh).
+#
+# pgbench corre fases de carga a ritmo fijo (-R transacciones/s). Cada
+# transacción ordena ~200 000 filas generadas al vuelo: gasta CPU y memoria de
+# ordenamiento (work_mem) sin tocar ninguna tabla del negocio. Cada una cuesta
+# ~0,6 núcleos·s con 12 clientes concurrentes (medido en el clúster), así que
+# 1 tps pide ~0,6 núcleos y 4 tps ~2,4 núcleos.
+#
+# -L 3000 descarta las transacciones que llevan más de 3 s de atraso: si la base
+# está saturada no se acumula una avalancha que se dispare al darle capacidad.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: saturador-bd
+  namespace: aws-local
+  labels: { app: saturador-bd }
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 900
+  template:
+    metadata:
+      labels: { app: saturador-bd }
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pgbench
+        image: postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - secretRef: { name: postgres-credenciales }
+        env:
+        - { name: PGHOST, value: "postgres.aws-local.svc.cluster.local" }
+        # "tps:segundos" por fase, separadas por espacios (lo reemplaza el script).
+        - { name: FASES, value: "__FASES__" }
+        # Consultas pesadas en paralelo. Más clientes = más procesos compitiendo
+        # por la CPU de la base, y cada consulta de la app espera más su turno.
+        - { name: CLIENTES, value: "12" }
+        command: ["sh", "-c"]
+        args:
+        - |
+          export PGPASSWORD="$POSTGRES_PASSWORD"
+          cat > /tmp/saturar.sql <<'SQL'
+          \set n random(150000, 250000)
+          SELECT count(*) FROM (SELECT g FROM generate_series(1, :n) g ORDER BY md5(g::text)) t;
+          SQL
+          for fase in $FASES; do
+            tps=${fase%%:*}; segundos=${fase##*:}
+            echo "=== fase: ${tps} tps durante ${segundos} s ==="
+            pgbench -n -U "$POSTGRES_USER" -f /tmp/saturar.sql -c "$CLIENTES" -j 2 \
+              -R "$tps" -L 3000 -T "$segundos" -P 15 jobbi
+          done
+        resources:
+          requests: { cpu: "50m", memory: "32Mi" }
+          limits: { cpu: "500m", memory: "128Mi" }

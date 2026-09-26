@@ -1,0 +1,339 @@
+{
+  "uid": "jobbi-prueba-10",
+  "title": "10 · Extra · Base de datos caída",
+  "description": "Guía: docs/guia-de-pruebas.md · Prueba extra (Base de datos / corte total transitorio): backoff exponencial, outbox y DLQ.",
+  "tags": [
+    "jobbi",
+    "pruebas"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "editable": true,
+  "panels": [
+    {
+      "type": "text",
+      "title": "Qué es esta prueba",
+      "options": {
+        "mode": "markdown",
+        "content": "**Comando:** `./scripts/caos/fallo3-caida-base-datos.sh`  \n**Caso del documento:** Prueba extra (Base de datos / corte total transitorio): backoff exponencial, outbox y DLQ.\n\n**Qué deberías ver:** **Errores** 5xx saltan (503: «no disponible», no errores del usuario) y vuelven a 0; **PostgreSQL** deja un hueco mientras está caído; los mensajes **visibles** (esperando) en la cola suben y se drenan al volver; **Reinicios** y **DLQ** no cambian.\n\n**Criterio de éxito:** 0 reinicios, DLQ = 0 e integridad OK (el script además dice «publicados 20 · cobrados 20»).\n\nAntes de empezar: `./scripts/reiniciar-entorno.sh`. No interrumpas el script en las esperas.  \n**En vivo, a mano:** romper `kubectl scale statefulset/postgres -n aws-local --replicas=0` · restaurar `--replicas=1`. En la app: cualquier acción responde «no disponible»."
+      },
+      "id": 1,
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Reinicios de contenedores (todo el sistema)",
+      "description": "Total acumulado. Debe quedarse igual durante el fallo: los servicios esperan con backoff, no se reinician.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"aws-local\"}) or vector(0)",
+          "legendFormat": "reinicios",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Eventos en Dead Letter Queue",
+      "description": "Mensajes apartados tras 5 intentos. Meta = 0; > 0 es alerta P2.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "jobbi:eventos_en_dlq",
+          "legendFormat": "DLQ",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Errors · % de respuestas 5xx por servicio",
+      "description": "SLO < 1 % (línea roja).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * (sum by (service) (rate(jobbi_http_request_duration_seconds_count{status=~\"5..\"}[20s])) or 0 * sum by (service) (rate(jobbi_http_request_duration_seconds_count[20s]))) / (sum by (service) (rate(jobbi_http_request_duration_seconds_count[20s])) > 0)",
+          "legendFormat": "{{service}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line+area"
+            },
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "PostgreSQL · conexiones de clientes vs. max_connections",
+      "description": "Hueco = la base no respondió (Fallo 3).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (estado) (jobbi_postgres_conexiones)",
+          "legendFormat": "{{estado}}",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(jobbi_postgres_conexiones_max)",
+          "legendFormat": "max_connections",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cola de Monetización · visibles vs. en vuelo",
+      "description": "visibles: esperan a un consumidor (suben mientras no hay Pod). en_vuelo: entregados a un worker y aún sin confirmar; si ese worker murió, reaparecen como visibles al vencer el VisibilityTimeout (30 s). La mide el gateway, así que no se corta cuando muere el Pod de Monetización.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (estado) (jobbi_sqs_mensajes{cola=\"monetizacion-events-queue\"})",
+          "legendFormat": "{{estado}}",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(jobbi_sqs_mensajes{cola=\"monetizacion-events-dlq\", estado=\"visibles\"})",
+          "legendFormat": "DLQ",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}
